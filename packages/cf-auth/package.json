@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Shared Stytch B2B session auth for Cloudflare runtimes. Single source of truth for the claim-extraction core (was duplicated verbatim across mikrotik-minder worker + -pro) plus both RS256/JWKS validators (Web Crypto for Workers, jose for Pages).",
+  "description": "Shared Stytch B2B session auth for Cloudflare runtimes. Single source of truth for the claim-extraction core (was duplicated verbatim across dunmir worker + -pro) plus both RS256/JWKS validators (Web Crypto for Workers, jose for Pages).",
   "exports": {
     ".": "./src/index.ts",
     "./claims": "./src/claims.ts",

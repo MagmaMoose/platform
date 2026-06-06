@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 MagmaMoose
+Copyright (c) 2025 Caleb Sargeant
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,17 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-NOTE ON PER-APP LICENSING
-This monorepo aggregates several products that retain their own upstream
-licenses. The MIT license above covers the monorepo scaffold and the shared
-`packages/*`. Individual apps keep their own LICENSE file, which governs that
-app's source:
-
-  - apps/diatreme            — MIT        (apps/diatreme/LICENSE)
-  - apps/chargate            — MIT        (apps/chargate/LICENSE)
-  - apps/dunmir              — Apache-2.0 (apps/dunmir/LICENSE)
-
-When in doubt, the LICENSE nearest a file governs that file.

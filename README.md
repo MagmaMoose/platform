@@ -22,15 +22,23 @@ packages via a submodule.
 
 | App | What it is | License |
 | --- | --- | --- |
-| `diatreme` | GitHub Marketplace **Action** for semantic release + Docker image promotion, plus its Cloudflare Worker. | MIT |
-| `mikrotik-minder` | "**Dun Mir**" — headless MikroTik maintenance platform: Cloudflare Worker (Hono + D1 + R2) control plane, Python agent (RouterOS), Helm chart. | Apache-2.0 |
+| `diatreme` | Deployable Cloudflare **Worker** for Diatreme (token broker / commit signer / Copilot quota & review service). | MIT |
+| `chargate` | Security + lint **scan scripts** (Trivy, Semgrep, TruffleHog, Checkov, ESLint, Hadolint, ShellCheck, …) — the single source of truth. | MIT |
+| `dunmir` | "**Dun Mir**" (formerly Mikrotik Minder) — headless MikroTik maintenance platform: Cloudflare Worker (Hono + D1 + R2) control plane, Python agent (RouterOS), Helm chart. | Apache-2.0 |
+
+**Marketplace actions live in their own repos.** `diatreme` and `chargate` are
+GitHub Marketplace **composite actions**, and the Marketplace is **one repo per
+action** — so each `action.yml` stays in its source repo
+([MagmaMoose/diatreme](https://github.com/MagmaMoose/diatreme),
+[MagmaMoose/chargate](https://github.com/MagmaMoose/chargate)) and *references* the
+code kept here (diatreme's worker; chargate's scan scripts).
 
 ## Develop
 
 ```bash
 mise install        # Node 22 + Python 3.12 (+ pnpm, uv)
 pnpm install        # JS/TS workspaces
-uv sync             # Python workspace (mikrotik-minder agent)
+uv sync             # Python workspace (dunmir agent)
 pnpm turbo run lint typecheck test build
 ```
 

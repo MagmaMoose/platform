@@ -1,7 +1,7 @@
 /**
  * Stytch B2B session-JWT validation using **Web Crypto** — zero dependencies,
  * for the Cloudflare **Workers** runtime (the edge). Ported from the tested
- * mikrotik-minder worker path; claim extraction is shared via ./claims.
+ * dunmir worker path; claim extraction is shared via ./claims.
  *
  * RS256 is hard-pinned (the only algorithm Stytch signs with). Throws on ANY
  * failure — callers must treat a throw as "unauthenticated".

@@ -1,8 +1,8 @@
 /**
  * Stytch B2B claim extraction — the genuinely-shared core.
  *
- * This logic was duplicated VERBATIM across the mikrotik-minder worker
- * (`worker/src/stytch.ts`) and mikrotik-minder-pro (`src/lib/stytch.ts`); the
+ * This logic was duplicated VERBATIM across the dunmir worker
+ * (`worker/src/stytch.ts`) and dunmir-pro (`src/lib/stytch.ts`); the
  * original comments even read "Mirrors the worker's tested extraction." This is
  * now the single source of truth. Dependency-free (pure object walking), so it
  * is safe to import from both Workers and Pages.

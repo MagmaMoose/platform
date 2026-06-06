@@ -1,22 +1,20 @@
 {
-  "name": "diatreme",
+  "name": "@calebsargeant/diatreme",
   "private": true,
   "type": "module",
-  "workspaces": [
-    "worker"
-  ],
   "scripts": {
-    "ci": "npm run lint:actions && npm run lint:markdown && npm run test:bake && npm run test:shell && npm run worker:check",
-    "lint:actions": "actionlint -color=false",
-    "lint:markdown": "markdownlint-cli2 README.md CHANGELOG.md",
-    "test:bake": "bash tests/bake-print.sh",
-    "test:shell": "bats tests/bats",
-    "test:worker": "npm --workspace worker test",
-    "typecheck:worker": "npm --workspace worker run typecheck",
-    "worker:check": "npm --workspace worker run check"
+    "check": "npm run typecheck && npm test && npx wrangler deploy --dry-run --outdir .wrangler/dry-run",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "jose": "^6.2.3"
   },
   "devDependencies": {
-    "bats": "^1.13.0",
-    "markdownlint-cli2": "^0.22.1"
+    "@types/node": "^25.9.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.7",
+    "wrangler": "^4.94.0"
   }
 }

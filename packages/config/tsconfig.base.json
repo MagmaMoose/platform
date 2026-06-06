@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/tsconfig",
-  "docs": "Shared TS base — consolidates the identical-shape tsconfig in diatreme/worker, mikrotik-minder/worker, and mikrotik-minder-pro.",
+  "docs": "Shared TS base — consolidates the identical-shape tsconfig in diatreme/worker, dunmir/worker, and dunmir-pro.",
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",

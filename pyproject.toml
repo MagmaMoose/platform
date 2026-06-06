@@ -7,7 +7,7 @@ description = "Golden-stack public monorepo — Python workspace root"
 requires-python = ">=3.12"
 
 [tool.uv.workspace]
-members = ["apps/mikrotik-minder/agent"]
+members = ["apps/dunmir/agent"]
 
 # Shared Python lint/format config — Ruff only (no Black/Flake8/isort).
 [tool.ruff]

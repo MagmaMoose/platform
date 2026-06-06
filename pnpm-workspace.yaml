@@ -1,7 +1,11 @@
 # Golden-stack monorepo — pnpm workspaces (JS/TS only).
 # Python packages are managed by uv (see pyproject.toml [tool.uv.workspace]).
+#
+# Marketplace composite actions (diatreme, chargate) keep their action.yml in
+# their own source repos; this monorepo holds the code they reference:
+#   apps/diatreme       — the deployable Cloudflare Worker (diatreme's service)
+#   apps/chargate       — the scan scripts (no package.json; not a pnpm member)
 packages:
   - "packages/*"
   - "apps/diatreme"
-  - "apps/diatreme/worker"
-  - "apps/mikrotik-minder/worker"
+  - "apps/dunmir/worker"

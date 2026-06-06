@@ -27,9 +27,16 @@ packages/
   api-client/    @platform/api-client — typed client + TanStack hooks (placeholder)
   ui/            @platform/ui       — shared shadcn WEB components (placeholder; never RN)
 apps/
-  diatreme/          — GitHub Action: semantic release + Docker promotion (+ CF Worker). MIT.
-  mikrotik-minder/   — "Dun Mir": CF Worker (Hono+D1) control plane + Python agent + Helm. Apache-2.0.
+  diatreme/          — Deployable CF Worker for Diatreme (token broker/signer/Copilot). MIT.
+  chargate/          — Security+lint scan scripts; the single source of truth. MIT.
+  dunmir/            — "Dun Mir" (was Mikrotik Minder): CF Worker (Hono+D1) + Python agent + Helm. Apache-2.0.
 ```
+
+**Marketplace composite actions stay in their own source repos** (the Marketplace
+is one repo per action): `diatreme` and `chargate` keep their `action.yml` in
+`MagmaMoose/diatreme` and `MagmaMoose/chargate`, and *reference* the code here
+(diatreme's worker; chargate's scan scripts). Do not add an `action.yml` to the
+monorepo for these.
 
 Per-app `LICENSE` files govern each app (see root `LICENSE` for the per-app map).
 Per-app `.github/workflows/` are preserved for reference but inert in the monorepo;
@@ -37,7 +44,8 @@ root CI lives in `.github/workflows/ci.yml`.
 
 ## Status
 
-First consolidation step. Apps are imported as-is; the originals
-(`MagmaMoose/diatreme`, `MagmaMoose/mikrotik-minder`) still serve production —
-this does **not** replace what's running yet. Next steps: rewire each app's
-local config/auth copies onto the shared `packages/*` and migrate npm → pnpm.
+First consolidation step. Code is imported as-is; the originals
+(`MagmaMoose/diatreme`, `MagmaMoose/chargate`, `MagmaMoose/dunmir`) still serve
+production — this does **not** replace what's running yet. Next steps: rewire each
+app's local config/auth copies onto the shared `packages/*`, wire the source-repo
+Marketplace actions to consume the code here, and migrate npm → pnpm.

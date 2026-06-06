@@ -1,6 +1,6 @@
 /**
  * Stytch B2B session-JWT validation using **jose** — for the Cloudflare **Pages**
- * runtime (SvelteKit hooks). Ported from the mikrotik-minder-pro path; claim
+ * runtime (SvelteKit hooks). Ported from the dunmir-pro path; claim
  * extraction is shared via ./claims, so it stays in lockstep with the Worker's
  * Web Crypto validator (./webcrypto).
  *
