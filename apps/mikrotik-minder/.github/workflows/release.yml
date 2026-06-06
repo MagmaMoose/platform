@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - ".gitignore"
+      - "CHANGELOG.md"
+      - "LICENSE"
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump type
+        required: false
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+concurrency:
+  group: release-runner-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      # Release Runner public-app mode uses OIDC to request an installation token
+      # for release writes; the workflow token itself only needs read access.
+      contents: read # Release writes use the public-app installation token.
+      id-token: write
+    steps:
+      - uses: magmamoose/release-runner@87130294ede7ce5b9910cc8b63a32a1281af2b83 # v1.22.0
+        with:
+          environment: prod
+          environments: '["prod"]'
+          prerelease-identifiers: "{}"
+          force-bump: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || '' }}

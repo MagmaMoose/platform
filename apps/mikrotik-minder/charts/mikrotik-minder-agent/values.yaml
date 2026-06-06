@@ -1,0 +1,170 @@
+# Mikrotik Minder agent — Helm values.
+#
+# The agent intentionally runs as a SINGLE replica. Two agents racing for the
+# same fleet would post duplicate heartbeats, push to the same git repo
+# concurrently, and double-pull backups. The chart enforces replicas=1 and uses
+# a Recreate strategy so the PVC isn't held during rollout.
+
+image:
+  repository: ghcr.io/magmamoose/mikrotik-minder-agent
+  tag: ""                # defaults to .Chart.appVersion when empty
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# nameOverride / fullnameOverride: standard Helm escape hatches.
+nameOverride: ""
+fullnameOverride: ""
+
+# ----------------------------------------------------------------------------
+# ServiceAccount knobs. The agent doesn't talk to the k8s API, so the SA
+# defaults to no token mounted.
+# ----------------------------------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""             # blank = use fullname
+  annotations: {}
+  automount: false     # the agent does not call the k8s API
+
+# ----------------------------------------------------------------------------
+# Agent config — rendered into a ConfigMap and mounted at
+# /etc/mikrotik-minder/config.yaml. Mirror the YAML shape from
+# agent/examples/config.example.yaml. Secrets are referenced by env-var name
+# (`*_env`); the actual values live in the Secret below.
+# ----------------------------------------------------------------------------
+config:
+  server:
+    url: "https://mikrotik-minder.example.workers.dev"
+    agent_token_env: MTM_AGENT_TOKEN
+    timeout_seconds: 10
+  defaults:
+    transport:
+      primary: api
+      fallback: ssh
+    heartbeat_interval_seconds: 300
+    export_interval_seconds: 3600
+    update_check_interval_seconds: 21600
+    backup_interval_seconds: 86400
+    inventory_check_interval_seconds: 3600   # CHR / licence / cloud facts (read-only); 0 or null disables
+    # Packet-loss probe: router pings this each heartbeat → loss % + avg RTT on the health trend.
+    # Uncomment to enable fleet-wide (or set per-device via config.devices[].ping_target).
+    # ping_target: 1.1.1.1
+    # ping_count: 5
+    connect_timeout_seconds: 5.0
+  git:
+    repo: /var/lib/mikrotik-minder/configs
+    # Optional offsite mirror. Pick one of ssh_key_path / token_env.
+    # The key is mounted from a Secret at /etc/mikrotik-minder/ssh/ — that's
+    # outside the PVC so a fresh install doesn't fail on a missing parent dir.
+    # remote:
+    #   url: git@github.com:acme/network-configs.git
+    #   branch: main
+    #   ssh_key_path: /etc/mikrotik-minder/ssh/git_deploy
+    #   push: true
+  backup:
+    dir: /var/lib/mikrotik-minder/backups
+    password_env: MTM_BACKUP_PASSWORD
+    retention: 14
+  devices: []
+    # - name: core-rtr-01
+    #   address: 10.0.0.1
+    #   username: minder
+    #   password_env: CORE_RTR_01_PASSWORD
+    #   site: dc1
+    #   role: core
+
+# ----------------------------------------------------------------------------
+# Secrets — all the env vars the config above references.
+#
+# In production, prefer external-secrets / sealed-secrets / vault-csi over
+# putting plaintext here. To do that, set create=false and existingSecretName
+# to a Secret you manage out-of-band.
+# ----------------------------------------------------------------------------
+secrets:
+  create: true
+  existingSecretName: ""
+
+  # Used only when create=true. Each key becomes an env var in the agent pod.
+  data: {}
+    # MTM_AGENT_TOKEN: "mtm_..."          # bearer from POST /v1/admin/agents
+    # MTM_BACKUP_PASSWORD: "..."          # encrypts the .backup file
+    # MTM_GIT_TOKEN: "ghp_..."            # optional, HTTPS git remote PAT
+    # CORE_RTR_01_PASSWORD: "..."         # one per device (password_env target)
+
+# ----------------------------------------------------------------------------
+# Git deploy key (optional). Mounted as a directory at /etc/mikrotik-minder/ssh/
+# (outside the PVC — directory mounts under the PVC fail on first install when
+# the .ssh subdir doesn't exist yet). Point config.git.remote.ssh_key_path at
+# /etc/mikrotik-minder/ssh/git_deploy when this is set.
+# ----------------------------------------------------------------------------
+git:
+  sshKey: ""                  # private key contents (NOT base64)
+  knownHosts: ""              # optional ssh-keyscan output to pre-pin remote hosts
+
+# ----------------------------------------------------------------------------
+# Persistence — single PVC mounted at /var/lib/mikrotik-minder. Holds the git
+# repo, encrypted backups, and the agent's known_hosts file.
+# ----------------------------------------------------------------------------
+persistence:
+  enabled: true
+  storageClassName: ""        # "" = cluster default
+  accessModes: [ReadWriteOnce]
+  size: 10Gi
+  annotations: {}
+
+# ----------------------------------------------------------------------------
+# Pod / container settings.
+# ----------------------------------------------------------------------------
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+# Optional egress allow-list. Cluster networks vary; off by default.
+networkPolicy:
+  enabled: false
+  # Each entry is a standard policy/v1.NetworkPolicyEgressRule.
+  egress: []
+    # - to:
+    #     - ipBlock:
+    #         cidr: 10.0.0.0/8                 # router management subnet
+    #   ports:
+    #     - protocol: TCP
+    #       port: 22
+    #     - protocol: TCP
+    #       port: 8728
+    # - to:
+    #     - namespaceSelector: {}
+    #   ports:
+    #     - protocol: TCP
+    #       port: 53
+    #     - protocol: UDP
+    #       port: 53
+
+# Extra environment variables (rarely needed).
+extraEnv: []
+  # - name: TZ
+  #   value: UTC
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Logging / verbosity passed to `mikrotik-minder-agent run`.
+verbosity: 1               # 0=warn, 1=info, 2=debug

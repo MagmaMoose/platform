@@ -1,0 +1,14 @@
+{
+  "name": "@platform/schemas",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared contract — zod (TS) + Pydantic (Python), same shapes, single source of truth.",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "zod": "3.24.1"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.base.json",
+  "docs": "Cloudflare Worker preset (Hono JSX + workers-types). Used by diatreme/worker and mikrotik-minder/worker.",
+  "compilerOptions": {
+    "types": ["@cloudflare/workers-types"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "hono/jsx"
+  }
+}

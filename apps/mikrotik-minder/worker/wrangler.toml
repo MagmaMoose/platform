@@ -1,0 +1,109 @@
+name = "mikrotik-minder"
+main = "src/index.ts"
+compatibility_date = "2025-01-09"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+# No account_id here — safe for local dev and self-host.
+# The hosted production account is configured in [env.prod] below.
+
+# Run the dead-man-alert sweep every minute.
+[triggers]
+crons = ["* * * * *"]
+
+# D1 binding for local dev / self-host.
+# Self-hosters: run `wrangler d1 create minder` and set your own database_id here.
+[[d1_databases]]
+binding = "DB"
+database_name = "minder"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+# R2 bucket for encrypted device backups. The agent PUTs ciphertext bodies
+# (already AES-encrypted by RouterOS); the worker streams them back to the
+# Pro UI on download. Self-hosters: run `wrangler r2 bucket create <name>`
+# and override the bucket_name here.
+[[r2_buckets]]
+binding = "BACKUPS"
+bucket_name = "mikrotik-minder-backups"
+
+# Secrets (set via `wrangler secret put <NAME>`):
+#   ADMIN_TOKEN      - bearer token for /v1/admin/* endpoints. Long random string.
+#   SLACK_BOT_TOKEN  - optional. xoxb-… bot token; enables Slack alert delivery.
+#
+# Public-facing vars below are non-secret runtime tuning knobs.
+[vars]
+# Default heartbeat interval applied to a device when none is set explicitly.
+DEFAULT_HEARTBEAT_INTERVAL_SECONDS = "3600"
+# Grace period added on top of the interval before a device is considered down.
+DEFAULT_GRACE_SECONDS = "600"
+# Slack channels (only used when the SLACK_BOT_TOKEN secret is set). Alerts are
+# routed by kind: wins → SUCCESS, config changes → INFO, the rest → FAILURE.
+SLACK_SUCCESS_CHANNEL = ""
+SLACK_FAILURE_CHANNEL = ""
+SLACK_INFO_CHANNEL = ""
+# Public base URL of the Pro UI. Used to build deep links in alerts (Slack
+# "Download" buttons, etc.). Leave empty to suppress link rendering.
+PRO_UI_URL = ""
+# Stytch B2B customer auth (#26). NON-SECRET — set these per deploy; do NOT commit
+# a customer's prod project id to this public repo. Derive from your project id:
+#   STYTCH_JWKS_URL = https://api.stytch.com/v1/b2b/sessions/jwks/<project_id>
+#                     (B2B path; test project → https://test.stytch.com/...)
+#   STYTCH_ISSUER   = stytch.com/<project_id>
+# The Stytch API SECRET is NOT needed here — the worker validates JWTs locally via
+# JWKS (Web Crypto). The secret lives only in the Pro app's Pages secrets.
+STYTCH_PROJECT_ID = ""
+STYTCH_JWKS_URL = ""
+STYTCH_ISSUER = ""
+
+[observability]
+enabled = true
+
+# ── Hosted production environment ──────────────────────────────────────────────
+# Used by CI only: `wrangler deploy --env prod` / `wrangler d1 migrations apply minder --remote --env prod`.
+# Do NOT run this locally unless you intend to mutate the live worker / database.
+#
+# Wrangler does NOT inherit `name`, `vars`, `triggers`, or `observability` into
+# environments — each has to be repeated here. Without `name`, `--env prod`
+# would deploy to a NEW worker called `mikrotik-minder-prod` (different URL,
+# missing the ADMIN_TOKEN secret bound to the live worker).
+[env.prod]
+# The hosted prod worker is "dunmir" — it owns the api.dunmir.magmamoose.com
+# custom domain and the prod secrets (ADMIN_TOKEN, SLACK_BOT_TOKEN). The repo was
+# renamed mikrotik-minder → dunmir; this name MUST match the domain-bound worker
+# or `deploy --env prod` ships to an orphan and api.dunmir serves stale code.
+name = "dunmir"
+account_id = "6e26afa31c37dee1dc82ad2f214f9b3c"
+
+[env.prod.triggers]
+crons = ["* * * * *"]
+
+[env.prod.vars]
+DEFAULT_HEARTBEAT_INTERVAL_SECONDS = "3600"
+DEFAULT_GRACE_SECONDS = "600"
+# magmamoose Slack: #mikrotik-minder (wins) / #engineering-alerts (failures) /
+# #engineering-info (config changes)
+SLACK_SUCCESS_CHANNEL = "C0B5BJDHZTM"
+SLACK_FAILURE_CHANNEL = "C0A9FT7355Z"
+SLACK_INFO_CHANNEL = "C0A9RSQ3G92"
+PRO_UI_URL = "https://dunmir.magmamoose.com"
+# Stytch B2B customer auth — prod project (non-secret; the JWKS endpoint is
+# public). Lets the worker validate the session JWTs the Pro app forwards and
+# scope by the session's org. MULTI_TENANT=true so admin-token internal calls
+# scope too (the customer JWT path scopes by org regardless).
+STYTCH_PROJECT_ID = "project-live-1f529d6c-1a43-46c4-aa98-04b0e2faff89"
+STYTCH_JWKS_URL = "https://api.stytch.com/v1/b2b/sessions/jwks/project-live-1f529d6c-1a43-46c4-aa98-04b0e2faff89"
+STYTCH_ISSUER = "stytch.com/project-live-1f529d6c-1a43-46c4-aa98-04b0e2faff89"
+MULTI_TENANT = "true"
+
+[env.prod.observability]
+enabled = true
+
+[[env.prod.d1_databases]]
+binding = "DB"
+database_name = "minder"
+database_id = "03bb68db-e2c1-4069-ad01-e32cce5efb32"
+migrations_dir = "migrations"
+
+[[env.prod.r2_buckets]]
+binding = "BACKUPS"
+bucket_name = "mikrotik-minder-backups"

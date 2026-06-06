@@ -1,0 +1,10 @@
+# Shared Ruff config (Ruff only — no Black/Flake8/isort).
+# Mirrors the agent's lint rules so every Python package lints identically.
+line-length = 100
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "I", "W", "B", "UP", "S", "RUF"]
+
+[lint.per-file-ignores]
+"**/tests/**" = ["S101"]

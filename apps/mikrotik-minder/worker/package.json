@@ -1,0 +1,27 @@
+{
+  "name": "mikrotik-minder-worker",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Mikrotik Minder control plane: heartbeat ingest, dead-man alerts, and assurance dashboard on Cloudflare Workers + D1.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "db:apply:local": "wrangler d1 migrations apply minder --local",
+    "db:apply:remote": "wrangler d1 migrations apply minder --remote",
+    "db:create": "wrangler d1 create minder"
+  },
+  "dependencies": {
+    "hono": "^4.12.23"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260530.1",
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^12.10.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.7",
+    "wrangler": "^4.95.0"
+  }
+}

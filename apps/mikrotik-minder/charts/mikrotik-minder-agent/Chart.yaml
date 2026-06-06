@@ -1,0 +1,29 @@
+apiVersion: v2
+name: mikrotik-minder-agent
+description: |
+  Mikrotik Minder agent — runs from inside a Kubernetes cluster that has network
+  access to your MikroTik routers. Probes them over RouterOS API/SSH, captures
+  /export to a local git repo (optionally pushed to a private remote), pulls
+  encrypted backups via SFTP, and reports heartbeats and job results to the
+  Mikrotik Minder control plane.
+type: application
+version: 0.2.0
+appVersion: "0.1.0"
+home: https://github.com/magmamoose/mikrotik-minder
+sources:
+  - https://github.com/magmamoose/mikrotik-minder
+keywords:
+  - mikrotik
+  - routeros
+  - monitoring
+  - backup
+  - configuration-management
+maintainers:
+  - name: Magmamoose
+icon: https://avatars.githubusercontent.com/magmamoose
+annotations:
+  # The agent must run as a single instance — see values.yaml comments.
+  artifacthub.io/changes: |
+    - Agent: periodic inventory_sync probe — reports CHR vs RouterBOARD, licence level, and /ip cloud name
+    - Agent: optional packet-loss / RTT ping probe feeding the health trend (set defaults.ping_target to enable)
+  artifacthub.io/license: Apache-2.0

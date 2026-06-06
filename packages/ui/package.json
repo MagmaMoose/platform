@@ -1,0 +1,11 @@
+{
+  "name": "@platform/ui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared WEB components (shadcn) — web only. DOM-based; does NOT port to React Native. Placeholder per golden-stack spec.",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

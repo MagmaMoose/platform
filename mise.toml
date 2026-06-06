@@ -1,0 +1,7 @@
+# Runtime versions are pinned here (mise). uv manages Python *dependencies*
+# on top; pnpm manages JS *dependencies*. This file owns the *versions*.
+[tools]
+node = "22"
+python = "3.12"
+pnpm = "9"
+uv = "latest"

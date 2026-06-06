@@ -1,0 +1,43 @@
+# ---- Secrets (NEVER commit) ----
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+*.pem
+*.key
+*.p8
+*_rsa
+*_ed25519
+secrets.*
+.secrets/
+
+# ---- JS / TS ----
+node_modules/
+dist/
+build/
+.turbo/
+.svelte-kit/
+.wrangler/
+*.tsbuildinfo
+coverage/
+
+# ---- Python ----
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+.local/
+
+# ---- Tooling / OS / IDE ----
+.DS_Store
+*.log
+.idea/
+.vscode/
+.claude/worktrees/
+.stfolder/

@@ -1,0 +1,35 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "diatreme",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-05",
+  "compatibility_flags": [
+    "nodejs_compat_v2"
+  ],
+  "workers_dev": true,
+  "preview_urls": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  // KV namespace backing /copilot-quota (manual override + billing/metrics
+  // cache + webhook signal) and the /oauth connect-state store.
+  //   wrangler kv namespace create COPILOT_QUOTA_KV
+  // Binding name MUST be COPILOT_QUOTA_KV — env.COPILOT_QUOTA_KV is read.
+  //
+  // Not hard-coded here so self-hosters aren't shipped the maintainer's
+  // namespace ID. For the hosted deploy, CI replaces the marker line below
+  // with the real kv_namespaces block from the COPILOT_QUOTA_KV_ID Actions
+  // variable (see .github/workflows/deploy-worker.yaml). Deploy without the
+  // variable (or run locally) → no KV binding → the endpoint and OAuth state
+  // degrade gracefully. For local dev, add the block by hand.
+  // __KV_NAMESPACES__
+  //
+  // Cron trigger: every 15 minutes refresh the billing cache for owners
+  // we've already seen (manual override, webhook event, or prior cache).
+  // This keeps `GET /copilot-quota` fast and offloads billing-API hits
+  // from the action's hot path. Skipped when COPILOT_QUOTA_KV is absent.
+  "triggers": {
+    "crons": ["*/15 * * * *"]
+  }
+}

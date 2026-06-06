@@ -1,0 +1,11 @@
+{
+  "name": "@platform/api-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Typed API client + TanStack Query hooks, shared by web + mobile. Placeholder per golden-stack spec — to be populated as web/mobile clients land.",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

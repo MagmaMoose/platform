@@ -1,0 +1,94 @@
+# Mikrotik Minder agent — example configuration.
+# Copy this file, edit, and pass via --config.
+# Secrets are referenced by env-var name (any `*_env` field). The agent reads
+# them at startup; the literal values never appear in this file or in logs.
+
+server:
+  # Public URL of the Mikrotik Minder Worker.
+  url: https://mikrotik-minder.example.workers.dev
+  # Env var holding the per-agent bearer token issued by POST /v1/admin/agents.
+  agent_token_env: MTM_AGENT_TOKEN
+  timeout_seconds: 10
+
+# Where the device list comes from:
+#   local  (default) — defined in the `devices:` section below.
+#   remote — fetched from the control plane (GET /v1/ingest/config) at startup,
+#            so the UI is the source of truth. Credentials are still resolved
+#            locally (password_env / ssh_key_path); the plane only sends refs.
+#            In remote mode `devices:` is optional — a fallback if the fetch fails.
+# config_source: local
+# In remote mode the agent re-fetches its config on this interval; when the set
+# of devices changes it restarts to apply (defaults.config_refresh_interval_seconds, 300).
+# For sealed (vault) credentials, point this at a persistent file; the agent keeps
+# its Curve25519 key there and registers the public half with the control plane.
+# agent_key_path: /var/lib/mikrotik-minder/agent_key
+
+defaults:
+  transport:
+    primary: api       # 'api' | 'ssh'
+    fallback: ssh      # 'api' | 'ssh' | null
+  heartbeat_interval_seconds: 300
+  # Set to enable scheduled `/export` capture. Omit to disable exports.
+  export_interval_seconds: 3600
+  # Device facts (CHR vs RouterBOARD, licence level, /ip cloud name). On by
+  # default at hourly; set to 0 or null to disable. Read-only, over SSH.
+  inventory_check_interval_seconds: 3600
+  # Optional packet-loss probe: the router pings this address each heartbeat and
+  # reports loss % + avg RTT for the health trend. Omit to leave the probe off.
+  # ping_target: 1.1.1.1
+  # ping_count: 5
+  connect_timeout_seconds: 5.0
+  export_timeout_seconds: 30.0
+  api:
+    port: 8728
+    use_tls: false
+    tls_port: 8729
+  ssh:
+    port: 22
+
+# Required when export_interval_seconds is set.
+# Each device's export lives at <repo>/devices/<name>/exports/latest.rsc;
+# git history is the diff/audit trail.
+git:
+  repo: /var/lib/mikrotik-minder/configs
+  author_name: mikrotik-minder
+  author_email: mikrotik-minder@localhost
+  # Optional. Push to a private remote after every commit. Pick ONE of ssh_key_path
+  # / token_env. The token is read from the env at process start; it's NEVER
+  # written into .git/config. Leave this block out for local-only operation.
+  # remote:
+  #   url: git@github.com:acme/network-configs.git
+  #   branch: main
+  #   ssh_key_path: /var/lib/mikrotik-minder/.ssh/git_deploy
+  #   # OR for HTTPS:
+  #   # url: https://github.com/acme/network-configs.git
+  #   # token_env: MTM_GIT_TOKEN
+  #   push: true
+
+devices:
+  - name: core-rtr-01
+    address: 10.0.0.1
+    username: minder
+    password_env: CORE_RTR_01_PASSWORD
+    site: dc1
+    role: core
+    tags: [production, core]
+    heartbeat_interval_seconds: 180   # per-device override
+
+  - name: branch-rtr-07
+    address: 10.7.0.1
+    username: minder
+    password_env: BRANCH_RTR_07_PASSWORD
+    site: branch-7
+    role: edge
+    transport:
+      primary: ssh        # this device only exposes SSH
+      fallback: null
+
+  - name: lab-rtr-01
+    address: 192.168.88.1
+    username: minder
+    ssh_key_path: ~/.ssh/minder
+    transport:
+      primary: ssh
+      fallback: null

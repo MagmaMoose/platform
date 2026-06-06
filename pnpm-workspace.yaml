@@ -1,0 +1,7 @@
+# Golden-stack monorepo — pnpm workspaces (JS/TS only).
+# Python packages are managed by uv (see pyproject.toml [tool.uv.workspace]).
+packages:
+  - "packages/*"
+  - "apps/diatreme"
+  - "apps/diatreme/worker"
+  - "apps/mikrotik-minder/worker"

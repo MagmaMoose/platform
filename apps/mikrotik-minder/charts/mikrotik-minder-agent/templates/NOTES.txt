@@ -1,0 +1,29 @@
+Mikrotik Minder agent {{ .Chart.AppVersion }} is rolling out as
+  {{ include "mma.fullname" . }} in namespace {{ .Release.Namespace }}.
+
+Watch the rollout:
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "mma.fullname" . }}
+  kubectl -n {{ .Release.Namespace }} logs -f deploy/{{ include "mma.fullname" . }}
+
+Run an ad-hoc command (e.g. probe one device locally):
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "mma.fullname" . }} -- \
+      mikrotik-minder-agent check --config /etc/mikrotik-minder/config.yaml <device-name>
+
+Verify the worker is reachable:
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "mma.fullname" . }} -- \
+      mikrotik-minder-agent test-connection --config /etc/mikrotik-minder/config.yaml
+
+{{- if eq .Values.secrets.create true }}
+{{- if not .Values.secrets.data }}
+
+WARNING: secrets.create=true but secrets.data is empty. The pod will start but
+will fail to send heartbeats until MTM_AGENT_TOKEN is populated. Set it in
+values.yaml or switch to an externally-managed secret via secrets.existingSecretName.
+{{- end }}
+{{- end }}
+
+{{- if not .Values.config.devices }}
+
+NOTE: config.devices is empty. The daemon will run but not probe anything. Add
+devices to your values.yaml under `config.devices`.
+{{- end }}

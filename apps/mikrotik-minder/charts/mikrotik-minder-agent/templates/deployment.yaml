@@ -1,0 +1,100 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "mma.fullname" . }}
+  labels:
+    {{- include "mma.labels" . | nindent 4 }}
+spec:
+  replicas: 1                           # HARD constraint — see chart README.
+  strategy:
+    type: Recreate                      # PVC is RWO; don't hold it during rollout.
+  selector:
+    matchLabels:
+      {{- include "mma.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "mma.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Roll the pod when the rendered config or secrets change.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "mma.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      containers:
+        - name: agent
+          image: {{ include "mma.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - run
+            - --config
+            - /etc/mikrotik-minder/config.yaml
+            {{- if gt (int .Values.verbosity) 0 }}
+            - {{ printf "-%s" (repeat (int .Values.verbosity) "v") | quote }}
+            {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ include "mma.secretName" . }}
+          {{- with .Values.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/mikrotik-minder
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/mikrotik-minder
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.git.sshKey }}
+            # The git deploy key and known_hosts are mounted as a directory
+            # OUTSIDE the PVC. Using subPath under /var/lib/mikrotik-minder/.ssh
+            # would fail on a fresh PVC because the volume hides the image's
+            # pre-created .ssh dir. Configure git.remote.ssh_key_path to point
+            # at /etc/mikrotik-minder/ssh/git_deploy.
+            - name: git-ssh
+              mountPath: /etc/mikrotik-minder/ssh
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "mma.fullname" . }}-config
+        - name: state
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "mma.fullname" . }}-state
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.git.sshKey }}
+        - name: git-ssh
+          secret:
+            secretName: {{ include "mma.fullname" . }}-git-ssh
+            defaultMode: 0400
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
