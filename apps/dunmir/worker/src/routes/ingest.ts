@@ -552,7 +552,29 @@ ingest.get("/config", async (c) => {
     };
   });
 
-  return c.json({ version: 1, generated_at: nowSeconds(), devices });
+  // Per-agent offsite git remote (drift history). The token is an opaque sealed
+  // blob the agent decrypts with its vault key; the worker never holds plaintext.
+  const agentRow = await c.env.DB.prepare(
+    "SELECT git_remote_url, git_remote_branch, git_remote_token_sealed FROM agents WHERE id = ?1",
+  )
+    .bind(agentId)
+    .first<{
+      git_remote_url: string | null;
+      git_remote_branch: string | null;
+      git_remote_token_sealed: string | null;
+    }>();
+
+  const git = agentRow?.git_remote_url
+    ? {
+        remote: {
+          url: agentRow.git_remote_url,
+          branch: agentRow.git_remote_branch ?? "main",
+          token_sealed: agentRow.git_remote_token_sealed ?? undefined,
+        },
+      }
+    : undefined;
+
+  return c.json({ version: 1, generated_at: nowSeconds(), devices, git });
 });
 
 // The agent registers its Curve25519 public key (libsodium sealed-box) so the

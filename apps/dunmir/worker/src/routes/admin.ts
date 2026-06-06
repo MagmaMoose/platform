@@ -50,7 +50,10 @@ admin.post("/agents", async (c) => {
 
 admin.get("/agents", async (c) => {
   const { results } = await c.env.DB.prepare(
-    "SELECT id, name, created_at, last_seen_at, disabled FROM agents WHERE tenant_id = ?1 ORDER BY created_at DESC",
+    `SELECT id, name, created_at, last_seen_at, disabled, public_key,
+            git_remote_url, git_remote_branch,
+            CASE WHEN git_remote_token_sealed IS NOT NULL THEN 1 ELSE 0 END AS git_remote_has_token
+       FROM agents WHERE tenant_id = ?1 ORDER BY created_at DESC`,
   )
     .bind(c.get("tenantId")!)
     .all();
@@ -79,6 +82,67 @@ admin.post("/agents/:id/rotate-token", async (c) => {
     .run();
   if ((res.meta.changes ?? 0) === 0) return c.json({ error: "not found" }, 404);
   return c.json({ id, token });
+});
+
+// Set (or clear) the agent's offsite git remote for config-export history.
+// The token arrives SEALED (sealed-box to the agent's public key) from the
+// browser — the worker stores ciphertext only, never the plaintext token.
+// Body: { url, branch?, token_sealed? }. url=null/"" clears the whole remote.
+// token_sealed omitted ⇒ keep existing; null/"" ⇒ clear token; string ⇒ set.
+admin.post("/agents/:id/git-remote", async (c) => {
+  const id = c.req.param("id");
+  const tenantId = c.get("tenantId")!;
+  const body = await c.req.json().catch(() => null);
+  if (body === null || typeof body !== "object") {
+    return c.json({ error: "invalid JSON body" }, 400);
+  }
+  const fields = body as Record<string, unknown>;
+
+  // Clearing the remote must be EXPLICIT: `url` present and null/"". A missing or
+  // malformed body is a 400 — never a destructive clear of an absent field.
+  if ("url" in fields && (fields.url === null || fields.url === "")) {
+    const res = await c.env.DB.prepare(
+      `UPDATE agents SET git_remote_url = NULL, git_remote_branch = NULL,
+         git_remote_token_sealed = NULL WHERE id = ?1 AND tenant_id = ?2`,
+    )
+      .bind(id, tenantId)
+      .run();
+    if ((res.meta.changes ?? 0) === 0) return c.json({ error: "agent not found" }, 404);
+    return c.json({ ok: true, cleared: true });
+  }
+
+  const url = asString(fields.url, "url", { max: 500 });
+  if (!url.ok) return c.json({ error: url.error }, 400);
+  // https only (not http): a token must never be pushed over cleartext.
+  if (!/^(https:\/\/|ssh:\/\/|git@)/.test(url.value)) {
+    return c.json({ error: "url must be an https://, ssh://, or git@ remote" }, 400);
+  }
+  const branch = asOptionalString(fields.branch, "branch", { max: 100 });
+  if (!branch.ok) return c.json({ error: branch.error }, 400);
+
+  const sealed = fields.token_sealed;
+  if (sealed !== null && sealed !== undefined && typeof sealed !== "string") {
+    return c.json({ error: "token_sealed must be a string or null" }, 400);
+  }
+  if (typeof sealed === "string" && sealed.length > 10000) {
+    return c.json({ error: "token_sealed exceeds 10000 chars" }, 400);
+  }
+
+  // token_sealed omitted ⇒ leave the existing token untouched (lets an operator
+  // change the branch without re-pasting the token).
+  const stmt =
+    sealed === undefined
+      ? c.env.DB.prepare(
+          `UPDATE agents SET git_remote_url = ?1, git_remote_branch = ?2
+             WHERE id = ?3 AND tenant_id = ?4`,
+        ).bind(url.value, branch.value ?? "main", id, tenantId)
+      : c.env.DB.prepare(
+          `UPDATE agents SET git_remote_url = ?1, git_remote_branch = ?2,
+             git_remote_token_sealed = ?3 WHERE id = ?4 AND tenant_id = ?5`,
+        ).bind(url.value, branch.value ?? "main", sealed || null, id, tenantId);
+  const res = await stmt.run();
+  if ((res.meta.changes ?? 0) === 0) return c.json({ error: "agent not found" }, 404);
+  return c.json({ ok: true });
 });
 
 // Delete an agent and ALL its devices (danger zone). Devices are removed first

@@ -1,6 +1,7 @@
 import {
   SignJWT,
   createRemoteJWKSet,
+  decodeJwt,
   importPKCS8,
   jwtVerify,
   type JWTPayload
@@ -19,7 +20,39 @@ const DEFAULT_PERMISSIONS: TokenPermissions = {
   pull_requests: "write"
 };
 
+const GITHUB_API_BASE = "https://api.github.com";
+
+// Trim and strip trailing slashes WITHOUT a backtracking-prone regex — CodeQL
+// flags /\/+$/ as a polynomial regex on (deployer-controlled) input. Used to
+// normalize the GHE issuer / API-base secrets so trivial copy-paste formatting
+// (trailing slash, stray whitespace/newline) doesn't break verification or URLs.
+function normalizeBaseUrl(value: string): string {
+  const trimmed = value.trim();
+  let end = trimmed.length;
+  while (end > 0 && trimmed.charCodeAt(end - 1) === 47) end--; // 47 = "/"
+  return trimmed.slice(0, end);
+}
+
 const remoteJwks = createRemoteJWKSet(new URL(GITHUB_OIDC_JWKS_URL));
+
+// GitHub Enterprise (ghe.com data-residency / GHES) support is opt-in via
+// GHE_OIDC_ISSUER + GHE_GITHUB_APP_* env. A GHE tenant mints Actions OIDC tokens
+// from its own issuer (e.g. https://token.actions.<tenant>.ghe.com) with a
+// distinct JWKS, and exposes a distinct REST API — so both verification and
+// token-minting must switch on the token's issuer. JWKS sets are cached per
+// issuer (jose dedupes the network fetch behind each set).
+const jwksByIssuer = new Map<string, ReturnType<typeof createRemoteJWKSet>>([
+  [GITHUB_OIDC_ISSUER, remoteJwks]
+]);
+function jwksForIssuer(issuer: string): ReturnType<typeof createRemoteJWKSet> {
+  let jwks = jwksByIssuer.get(issuer);
+  if (!jwks) {
+    // Actions OIDC issuers publish their keys at <issuer>/.well-known/jwks.
+    jwks = createRemoteJWKSet(new URL(`${normalizeBaseUrl(issuer)}/.well-known/jwks`));
+    jwksByIssuer.set(issuer, jwks);
+  }
+  return jwks;
+}
 
 type PermissionLevel = "read" | "write";
 type TokenPermissions = Record<string, PermissionLevel>;
@@ -30,6 +63,15 @@ export type BrokerEnv = Env & {
   OIDC_AUDIENCE?: string;
   ALLOWED_REPOSITORIES?: string;
   TOKEN_PERMISSIONS?: string;
+  // GitHub Enterprise (ghe.com / GHES) support — opt-in. When GHE_OIDC_ISSUER is
+  // set, /token also accepts OIDC tokens from that issuer and mints via the GHE
+  // App against GHE_API_BASE. Independently, /process recognizes PR URLs whose
+  // host matches GHE_API_BASE and routes its REST + GraphQL triage calls there.
+  GHE_OIDC_ISSUER?: string; // e.g. https://token.actions.<tenant>.ghe.com
+  GHE_API_BASE?: string; // e.g. https://<tenant>.ghe.com/api/v3
+  GHE_GITHUB_APP_ID?: string;
+  GHE_GITHUB_APP_PRIVATE_KEY?: string;
+  GHE_GITHUB_APP_INSTALLATION_ID?: string; // set to skip the per-repo lookup
   // /copilot-quota + /webhook
   COPILOT_QUOTA_KV?: KVNamespace;
   COPILOT_QUOTA_OVERRIDE_SECRET?: string;
@@ -48,6 +90,11 @@ export type BrokerEnv = Env & {
   // Trusted-author gate for automatic triage: untrusted PRs are skipped.
   TRIAGE_TRUSTED_ASSOCIATIONS?: string; // default OWNER,MEMBER,COLLABORATOR
   TRIAGE_TRUSTED_USERS?: string; // extra allowlisted logins (comma-separated)
+  // GitHub Advanced Security: when enabled, /process also triages a PR's open
+  // code-scanning (CodeQL/SAST) alerts. Opt-in (it can dismiss security
+  // findings) — set true/1/on/yes. Also needs the App's security_events perm
+  // (gracefully skipped when absent).
+  TRIAGE_CODE_SCANNING?: string;
   // POST /process — manual re-walk of a PR's Copilot comments. Bearer-gated;
   // unset disables the endpoint. Also gates /dispatch and /sign.
   PROCESS_TRIGGER_SECRET?: string;
@@ -60,6 +107,17 @@ export type BrokerEnv = Env & {
   // a self-hosted runner). Unset URL ⇒ the task is queued only.
   DISPATCH_TRIGGER_URL?: string;
   DISPATCH_ROUTINE_TOKEN?: string;
+  // Self-hosted Claude Agent SDK dispatcher (diatreme-pro POST /api/dispatch).
+  // When DISPATCH_AGENT_URL is set, "fix" triage routes here instead of the
+  // Routine: POST {repo,branch,pr,file,comment,reason,effort} + Bearer
+  // DISPATCH_AGENT_TOKEN. If the endpoint sits behind Cloudflare Access, also
+  // set the service-token pair.
+  DISPATCH_AGENT_URL?: string;
+  DISPATCH_AGENT_TOKEN?: string;
+  DISPATCH_AGENT_CF_ACCESS_CLIENT_ID?: string;
+  DISPATCH_AGENT_CF_ACCESS_CLIENT_SECRET?: string;
+  // Alias: some setups name the service-token secret without "CLIENT_".
+  DISPATCH_AGENT_CF_ACCESS_SECRET?: string;
   // /webhook push → auto-update open PRs targeting the pushed branch (opt-in).
   AUTO_UPDATE_BRANCHES?: string;
 };
@@ -81,7 +139,8 @@ interface Dependencies {
   fetch: typeof fetch;
   verifyOidcToken: (
     token: string,
-    audience: string | string[]
+    audience: string | string[],
+    trustedIssuers?: string[]
   ) => Promise<VerifiedOidcPayload>;
   createGitHubAppJwt: (
     appId: string,
@@ -185,7 +244,16 @@ async function handleTokenRequest(
   assertRepositoryParts(body.owner, body.repo);
 
   const audience = env.OIDC_AUDIENCE || [DEFAULT_AUDIENCE, LEGACY_AUDIENCE];
-  const oidcPayload = await verifyOidc(body.oidcToken, audience, dependencies);
+  const gheIssuer = env.GHE_OIDC_ISSUER ? normalizeBaseUrl(env.GHE_OIDC_ISSUER) : "";
+  const trustedIssuers = gheIssuer
+    ? [GITHUB_OIDC_ISSUER, gheIssuer]
+    : [GITHUB_OIDC_ISSUER];
+  const oidcPayload = await verifyOidc(
+    body.oidcToken,
+    audience,
+    dependencies,
+    trustedIssuers
+  );
   if (oidcPayload.repository !== repository) {
     return jsonError(403, "repo_mismatch");
   }
@@ -194,23 +262,38 @@ async function handleTokenRequest(
     return jsonError(403, "repo_not_allowed");
   }
 
+  // Mint against the same GitHub host the token came from: github.com by
+  // default, or the configured GHE tenant when the verified issuer matches
+  // GHE_OIDC_ISSUER (a different REST API base and a different App).
+  const isGhe = !!gheIssuer && oidcPayload.iss === gheIssuer;
+  const host = resolveGitHubHost(env, isGhe);
+
   const appJwt = await dependencies.createGitHubAppJwt(
-    requiredSecret(env.GITHUB_APP_ID, "GITHUB_APP_ID"),
-    requiredSecret(env.GITHUB_APP_PRIVATE_KEY, "GITHUB_APP_PRIVATE_KEY"),
+    host.appId,
+    host.privateKey,
     dependencies.now()
   );
-  const installationId = await findInstallationId(
-    dependencies.fetch,
-    appJwt,
-    body.owner,
-    body.repo
-  );
+  // The GHE App's Vault secret carries its installation id, so an explicit
+  // GHE_GITHUB_APP_INSTALLATION_ID skips the per-repo installation lookup.
+  const explicitInstallation = host.installationId
+    ? Number(host.installationId)
+    : NaN;
+  const installationId = Number.isInteger(explicitInstallation) && explicitInstallation > 0
+    ? explicitInstallation
+    : await findInstallationId(
+        dependencies.fetch,
+        appJwt,
+        body.owner,
+        body.repo,
+        host.apiBase
+      );
   const token = await createInstallationToken(
     dependencies.fetch,
     appJwt,
     installationId,
     body.repo,
-    parsePermissions(env.TOKEN_PERMISSIONS)
+    parsePermissions(env.TOKEN_PERMISSIONS),
+    host.apiBase
   );
 
   return json(
@@ -1465,6 +1548,17 @@ function constantTimeEquals(a: string, b: string): boolean {
 
 type TriageDecision = "fix" | "dismiss" | "skip";
 
+// Copilot-comment triage is fix|dismiss (never "skip" — an unsure result
+// escalates to a large-effort fix, never a no-op) plus an effort tier the
+// dispatcher uses to pick the model + inline-vs-PR behaviour. The GHAS/alert
+// path keeps the separate TriageDecision (which retains "skip").
+type CommentEffort = "basic" | "medium" | "large";
+interface CommentTriage {
+  decision: "fix" | "dismiss";
+  effort: CommentEffort;
+  reason?: string;
+}
+
 const DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5";
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -1474,7 +1568,24 @@ const TRIAGE_SYSTEM_PROMPT =
   "You triage GitHub Copilot pull request review comments. For the comment, decide:\n" +
   '- "fix": it identifies a real, actionable problem that should be changed in code.\n' +
   '- "dismiss": it is wrong, not applicable, or a false positive.\n' +
-  '- "skip": you cannot decide from the provided context alone.\n' +
+  'If you are not confident it is a clear false positive, choose "fix" (never skip a real issue). ' +
+  "Then rate the effort to fix:\n" +
+  '- "basic": a trivial, mechanical one-line change.\n' +
+  '- "medium": a contained change within a single file.\n' +
+  '- "large": multi-file, ambiguous, or needs judgement.\n' +
+  'Respond with ONLY a JSON object: {"decision":"fix|dismiss","effort":"basic|medium|large","reason":"<short>"}.';
+
+// GitHub Advanced Security triage. Deliberately more conservative than comment
+// triage: dismissing a real security finding is harmful, so the model must
+// default to "skip" (leave the alert open for a human) unless it is confident.
+const ALERT_TRIAGE_SYSTEM_PROMPT =
+  "You triage GitHub code scanning security alerts (CodeQL and similar SAST tools). " +
+  "For the alert, decide:\n" +
+  '- "fix": it is a real, actionable security or code-quality problem that should be fixed in code.\n' +
+  '- "dismiss": it is a clear false positive or genuinely not applicable to this code.\n' +
+  '- "skip": you cannot confidently decide from the provided context — leave it open for a human.\n' +
+  'Be conservative: only choose "dismiss" when you are confident it is a false positive; ' +
+  'when in any doubt, choose "skip". Never dismiss a plausible real vulnerability.\n' +
   'Respond with ONLY a JSON object: {"decision":"fix|dismiss|skip","reason":"<short>"}.';
 
 type TriageConfig =
@@ -1588,17 +1699,17 @@ async function handleReviewCommentEvent(
   }
 
   try {
-    const decision = await classifyComment(dependencies.fetch, config, body, {
+    const triage = await classifyComment(dependencies.fetch, config, body, {
       path: asString(comment.path),
       diffHunk: asString(comment.diff_hunk)
     });
 
-    if (decision === "dismiss") {
+    if (triage.decision === "dismiss") {
       const token = await mintInstallationToken(
-        env,
         dependencies,
         repo.owner,
-        repo.repo
+        repo.repo,
+        resolveGitHubHost(env, false)
       );
       const dismissed = await dismissReviewComment(
         dependencies.fetch,
@@ -1608,26 +1719,57 @@ async function handleReviewCommentEvent(
         prNumber,
         commentId
       );
-      return json({ ok: true, decision, dismissed }, 200);
+      return json({ ok: true, decision: "dismiss", dismissed }, 200);
     }
 
-    // "skip" is a no-op; "fix" enqueues an autonomous dispatch (and starts a
-    // Claude Code Web session when DISPATCH_TRIGGER_URL is configured).
-    if (decision === "fix") {
-      const dispatched = await enqueueDispatch(env, dependencies, {
+    // "fix": hand off to the Agent SDK dispatcher when configured (it clones,
+    // edits, and commits inline or opens a PR by effort); if the dispatcher
+    // fails or is unreachable, fall back to the Routine/queue so fixes are
+    // never silently dropped. There is no "skip" — an unsure classify is a fix.
+    const headRef = pr && isRecord(pr.head) ? asString(pr.head.ref) : undefined;
+    let agentDispatched: { status: string } | undefined;
+    if (agentDispatchConfigured(env) && headRef) {
+      agentDispatched = await dispatchToAgent(env, dependencies, {
         repo: `${repo.owner}/${repo.repo}`,
+        branch: headRef,
         pr: prNumber,
-        instruction:
-          `Address this Copilot review comment on ` +
-          `${repo.owner}/${repo.repo}#${prNumber}` +
-          (asString(comment.path) ? ` (${asString(comment.path)})` : "") +
-          `: ${body}`,
-        user: prAuthor,
-        source: "triage"
+        comment: body,
+        effort: triage.effort,
+        file: asString(comment.path),
+        reason: triage.reason
       });
-      return json({ ok: true, decision, action: "dispatched", ...dispatched }, 200);
+      // If agent accepted the job, return immediately with the success.
+      if (agentDispatched.status === "agent_accepted") {
+        return json(
+          { ok: true, decision: "fix", effort: triage.effort, action: "agent", ...agentDispatched },
+          200
+        );
+      }
     }
-    return json({ ok: true, decision, action: "none" }, 200);
+    // Agent dispatch either not configured, no head ref, or failed — fall back
+    // to the Routine/queue path.
+    const dispatched = await enqueueDispatch(env, dependencies, {
+      repo: `${repo.owner}/${repo.repo}`,
+      pr: prNumber,
+      instruction:
+        `Address this Copilot review comment on ` +
+        `${repo.owner}/${repo.repo}#${prNumber}` +
+        (asString(comment.path) ? ` (${asString(comment.path)})` : "") +
+        `: ${body}`,
+      user: prAuthor,
+      source: "triage"
+    });
+    return json(
+      {
+        ok: true,
+        decision: "fix",
+        effort: triage.effort,
+        action: agentDispatched ? "agent_fallback" : "dispatched",
+        ...(agentDispatched ? { agent_status: agentDispatched.status } : {}),
+        ...dispatched
+      },
+      200
+    );
   } catch (error) {
     const code = error instanceof HttpError ? error.code : "triage_failed";
     return json({ ok: true, error: code }, 200);
@@ -1639,13 +1781,13 @@ async function classifyComment(
   config: TriageConfig,
   comment: string,
   context: { path?: string; diffHunk?: string }
-): Promise<TriageDecision> {
+): Promise<CommentTriage> {
   const user = buildTriageUserMessage(comment, context);
   const text =
     config.kind === "anthropic"
       ? await callAnthropic(doFetch, config, TRIAGE_SYSTEM_PROMPT, user)
       : await callOpenAiCompatible(doFetch, config, TRIAGE_SYSTEM_PROMPT, user);
-  return parseDecision(text);
+  return parseCommentTriage(text);
 }
 
 function buildTriageUserMessage(
@@ -1748,29 +1890,68 @@ function parseDecision(text: string): TriageDecision {
   return "skip";
 }
 
+// Comment triage parser. Unlike parseDecision, there is no "skip": a dismiss
+// must be explicit, and anything else (incl. "skip", missing, or unparseable)
+// becomes a large-effort fix so an uncertain result never silently no-ops.
+function parseCommentTriage(text: string): CommentTriage {
+  const effortOf = (raw?: string): CommentEffort =>
+    raw === "basic" ? "basic" : raw === "medium" ? "medium" : "large";
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (isRecord(parsed)) {
+        const decision = asString(parsed.decision)?.toLowerCase();
+        const effort = effortOf(asString(parsed.effort)?.toLowerCase());
+        const reason = asString(parsed.reason);
+        if (decision === "dismiss") return { decision: "dismiss", effort, reason };
+        return { decision: "fix", effort, reason };
+      }
+    } catch {
+      // fall through to keyword scan
+    }
+  }
+  // Unparseable: only an explicit "dismiss" word dismisses; else large-effort fix.
+  if (/\bdismiss\b/i.test(text) && !/\bfix\b/i.test(text)) {
+    return { decision: "dismiss", effort: "large" };
+  }
+  return { decision: "fix", effort: "large" };
+}
+
 async function mintInstallationToken(
-  env: BrokerEnv,
   dependencies: Dependencies,
   owner: string,
-  repo: string
+  repo: string,
+  host: GitHubHost,
+  permissions: TokenPermissions = DEFAULT_PERMISSIONS
 ): Promise<string> {
   const appJwt = await dependencies.createGitHubAppJwt(
-    requiredSecret(env.GITHUB_APP_ID, "GITHUB_APP_ID"),
-    requiredSecret(env.GITHUB_APP_PRIVATE_KEY, "GITHUB_APP_PRIVATE_KEY"),
+    host.appId,
+    host.privateKey,
     dependencies.now()
   );
-  const installationId = await findInstallationId(
-    dependencies.fetch,
-    appJwt,
-    owner,
-    repo
-  );
+  // A configured installation id (carried by the GHE App's secret) skips the
+  // per-repo lookup, mirroring the /token path.
+  const explicitInstallation = host.installationId
+    ? Number(host.installationId)
+    : NaN;
+  const installationId =
+    Number.isInteger(explicitInstallation) && explicitInstallation > 0
+      ? explicitInstallation
+      : await findInstallationId(
+          dependencies.fetch,
+          appJwt,
+          owner,
+          repo,
+          host.apiBase
+        );
   const { token } = await createInstallationToken(
     dependencies.fetch,
     appJwt,
     installationId,
     repo,
-    DEFAULT_PERMISSIONS
+    permissions,
+    host.apiBase
   );
   return token;
 }
@@ -1804,24 +1985,33 @@ async function dismissReviewComment(
   owner: string,
   repo: string,
   prNumber: number,
-  commentDatabaseId: number
+  commentDatabaseId: number,
+  graphqlUrl: string = GITHUB_GRAPHQL_URL
 ): Promise<boolean> {
   const query =
     "query($owner:String!,$repo:String!,$pr:Int!){" +
     "repository(owner:$owner,name:$repo){pullRequest(number:$pr){" +
     "reviewThreads(first:100){nodes{id isResolved " +
     "comments(first:100){nodes{databaseId}}}}}}}";
-  const data = await githubGraphql(doFetch, token, query, {
-    owner,
-    repo,
-    pr: prNumber
-  });
+  const data = await githubGraphql(
+    doFetch,
+    token,
+    query,
+    { owner, repo, pr: prNumber },
+    graphqlUrl
+  );
   const threadId = findThreadIdForComment(data, commentDatabaseId);
   if (!threadId) return false;
 
   const mutation =
     "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}";
-  const result = await githubGraphql(doFetch, token, mutation, { id: threadId });
+  const result = await githubGraphql(
+    doFetch,
+    token,
+    mutation,
+    { id: threadId },
+    graphqlUrl
+  );
   const resolved = isRecord(result.resolveReviewThread)
     ? result.resolveReviewThread
     : null;
@@ -1866,9 +2056,10 @@ async function githubGraphql(
   doFetch: typeof fetch,
   token: string,
   query: string,
-  variables: Record<string, unknown>
+  variables: Record<string, unknown>,
+  graphqlUrl: string = GITHUB_GRAPHQL_URL
 ): Promise<Record<string, unknown>> {
-  const response = await doFetch(GITHUB_GRAPHQL_URL, {
+  const response = await doFetch(graphqlUrl, {
     method: "POST",
     headers: {
       ...githubHeaders(token),
@@ -1884,16 +2075,282 @@ async function githubGraphql(
   return body.data;
 }
 
+// ─── GitHub Advanced Security (code scanning) triage ──────────────────────────
+// /process also triages a PR's open code-scanning alerts (CodeQL + other SAST
+// tools), mirroring the Copilot-comment model:
+//   dismiss → PATCH the alert dismissed as a false positive
+//   fix     → enqueue an autonomous dispatch to fix it
+//   skip    → leave it open for a human
+// Best-effort: it mints a dedicated security_events token, so a missing grant
+// (or any other unexpected error) yields `available:false` without failing the
+// Copilot-comment triage run. When code scanning is not enabled (API 404s) the
+// alert list is empty and yields `available:true` with `processed:0`. When the
+// token lacks security_events permission (API 403s), it throws an error so
+// operators see `available:false` and can detect the misconfiguration. The LLM
+// prompt is deliberately conservative — it defaults to "skip" so a real finding
+// is never auto-dismissed on a guess.
+
+interface CodeScanningAlert {
+  number: number;
+  rule: string;
+  description?: string;
+  severity?: string;
+  path?: string;
+  startLine?: number;
+  message?: string;
+  tool?: string;
+}
+
+interface AlertTriageResult {
+  available: boolean;
+  processed: number;
+  counts: { fix: number; dismiss: number; skip: number };
+  results: {
+    alert_number: number;
+    rule: string;
+    decision: TriageDecision;
+    dismissed?: boolean;
+    dispatch?: string;
+  }[];
+  error?: string;
+}
+
+function codeScanningEnabled(env: BrokerEnv): boolean {
+  const raw = (env.TRIAGE_CODE_SCANNING ?? "").trim().toLowerCase();
+  return raw === "true" || raw === "1" || raw === "on" || raw === "yes";
+}
+
+async function listCodeScanningAlerts(
+  doFetch: typeof fetch,
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  apiBase: string = GITHUB_API_BASE
+): Promise<CodeScanningAlert[]> {
+  const url =
+    `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/` +
+    `code-scanning/alerts?state=open&per_page=100&ref=` +
+    encodeURIComponent(`refs/pull/${pullNumber}/head`);
+  const response = await doFetch(url, { headers: githubHeaders(token) });
+  // 404 → code scanning not enabled / no analysis for this ref. Return empty
+  // array to indicate nothing to triage. 403 → the token lacks security_events
+  // permission; treat this as an error so operators see `available:false` and
+  // can detect a permission/configuration problem.
+  if (response.status === 404) return [];
+  if (response.status === 403) {
+    throw new HttpError(403, "github_code_scanning_forbidden");
+  }
+  if (!response.ok) throw new HttpError(502, "github_code_scanning_failed");
+  const body = await response.json();
+  if (!Array.isArray(body)) return [];
+  const alerts: CodeScanningAlert[] = [];
+  for (const entry of body) {
+    if (!isRecord(entry)) continue;
+    if (typeof entry.number !== "number") continue;
+    if (asString(entry.state) !== "open") continue;
+    const rule = isRecord(entry.rule) ? entry.rule : {};
+    const instance = isRecord(entry.most_recent_instance)
+      ? entry.most_recent_instance
+      : {};
+    const location = isRecord(instance.location) ? instance.location : {};
+    const messageObj = isRecord(instance.message) ? instance.message : {};
+    const tool = isRecord(entry.tool) ? entry.tool : {};
+    alerts.push({
+      number: entry.number,
+      rule: asString(rule.id) ?? asString(rule.name) ?? "unknown",
+      description: asString(rule.description),
+      severity:
+        asString(rule.security_severity_level) ?? asString(rule.severity),
+      path: asString(location.path),
+      startLine:
+        typeof location.start_line === "number" ? location.start_line : undefined,
+      message: asString(messageObj.text),
+      tool: asString(tool.name)
+    });
+  }
+  return alerts;
+}
+
+function buildAlertUserMessage(alert: CodeScanningAlert): string {
+  return [
+    `Tool: ${alert.tool ?? "code scanning"}`,
+    `Rule: ${alert.rule}`,
+    alert.severity ? `Severity: ${alert.severity}` : null,
+    alert.path
+      ? `Location: ${alert.path}${alert.startLine ? `:${alert.startLine}` : ""}`
+      : null,
+    alert.description ? `Rule description: ${alert.description}` : null,
+    alert.message ? `Alert: ${alert.message}` : null
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function classifyAlert(
+  doFetch: typeof fetch,
+  config: TriageConfig,
+  alert: CodeScanningAlert
+): Promise<TriageDecision> {
+  const user = buildAlertUserMessage(alert);
+  const text =
+    config.kind === "anthropic"
+      ? await callAnthropic(doFetch, config, ALERT_TRIAGE_SYSTEM_PROMPT, user)
+      : await callOpenAiCompatible(doFetch, config, ALERT_TRIAGE_SYSTEM_PROMPT, user);
+  return parseDecision(text);
+}
+
+async function dismissCodeScanningAlert(
+  doFetch: typeof fetch,
+  token: string,
+  owner: string,
+  repo: string,
+  alertNumber: number,
+  apiBase: string = GITHUB_API_BASE
+): Promise<boolean> {
+  const url =
+    `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/` +
+    `code-scanning/alerts/${alertNumber}`;
+  const response = await doFetch(url, {
+    method: "PATCH",
+    headers: { ...githubHeaders(token), "content-type": "application/json" },
+    body: JSON.stringify({
+      state: "dismissed",
+      // GitHub's enum uses spaces; "dismiss" means the model judged it a false
+      // positive (real-but-deferred findings are left open via "skip").
+      dismissed_reason: "false positive",
+      dismissed_comment: "Dismissed by Diatreme triage as a false positive."
+    })
+  });
+  if (!response.ok) return false;
+  const body = await response.json().catch(() => null);
+  return isRecord(body) && asString(body.state) === "dismissed";
+}
+
+async function triageCodeScanningAlerts(
+  env: BrokerEnv,
+  dependencies: Dependencies,
+  config: TriageConfig,
+  host: GitHubHost,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  headRef: string | undefined
+): Promise<AlertTriageResult> {
+  const counts = { fix: 0, dismiss: 0, skip: 0 };
+  const results: AlertTriageResult["results"] = [];
+  try {
+    // A dedicated security_events token — a missing grant must not break the
+    // Copilot-comment triage that already ran on its own (contents/PR) token.
+    const token = await mintInstallationToken(dependencies, owner, repo, host, {
+      security_events: "write"
+    });
+    const alerts = await listCodeScanningAlerts(
+      dependencies.fetch,
+      token,
+      owner,
+      repo,
+      pullNumber,
+      host.apiBase
+    );
+    for (const alert of alerts) {
+      const decision = await classifyAlert(dependencies.fetch, config, alert);
+      counts[decision] += 1;
+      if (decision === "dismiss") {
+        const dismissed = await dismissCodeScanningAlert(
+          dependencies.fetch,
+          token,
+          owner,
+          repo,
+          alert.number,
+          host.apiBase
+        );
+        results.push({
+          alert_number: alert.number,
+          rule: alert.rule,
+          decision,
+          dismissed
+        });
+      } else if (decision === "fix") {
+        const instruction =
+          `Fix this ${alert.tool ?? "code scanning"} alert on ` +
+          `${owner}/${repo}#${pullNumber}` +
+          (alert.path
+            ? ` (${alert.path}${alert.startLine ? `:${alert.startLine}` : ""})`
+            : "") +
+          `: [${alert.rule}] ${alert.message ?? alert.description ?? ""}`.trim();
+        // Route security/quality fixes through the agent dispatcher, the same as
+        // Copilot comments. Alerts carry no effort signal, so default to medium
+        // (Sonnet, committed inline on the PR branch) — capable enough for a
+        // targeted security fix without spinning up a separate PR. Falls back to
+        // the Routine/queue when the agent isn't configured or the head ref is
+        // unavailable (e.g. /process on a PR whose head we couldn't resolve).
+        const dispatched =
+          agentDispatchConfigured(env) && headRef
+            ? await dispatchToAgent(env, dependencies, {
+                repo: `${owner}/${repo}`,
+                branch: headRef,
+                pr: pullNumber,
+                file: alert.path,
+                comment: instruction,
+                reason: alert.rule,
+                effort: "medium"
+              })
+            : await enqueueDispatch(env, dependencies, {
+                repo: `${owner}/${repo}`,
+                pr: pullNumber,
+                instruction,
+                source: "process-code-scanning"
+              });
+        results.push({
+          alert_number: alert.number,
+          rule: alert.rule,
+          decision,
+          dispatch: dispatched.status
+        });
+      } else {
+        results.push({ alert_number: alert.number, rule: alert.rule, decision });
+      }
+    }
+    return { available: true, processed: results.length, counts, results };
+  } catch (error) {
+    return {
+      available: false,
+      processed: results.length,
+      counts,
+      results,
+      error: error instanceof HttpError ? error.code : "code_scanning_failed"
+    };
+  }
+}
+
 // ─── POST /process ───────────────────────────────────────────────────────────
 // Manual re-walk of a pull request's Copilot review comments — the surface the
 // Diatreme Pro dashboard calls. Bearer-gated (PROCESS_TRIGGER_SECRET). Reuses the
 // same classify/dismiss logic as the webhook triage path, but processes every
-// Copilot comment on the PR rather than reacting to a single delivery.
+// Copilot comment on the PR rather than reacting to a single delivery. It also
+// triages the PR's open code-scanning (GHAS) alerts — see triageCodeScanningAlerts.
 
 interface ProcessTarget {
+  host: string;
   owner: string;
   repo: string;
   pullNumber: number;
+}
+
+// Pull owner/repo/PR-number AND the web host out of a PR URL (scheme optional).
+// The host drives github.com-vs-GHE routing in handleProcessRequest.
+function parsePrUrl(prUrl: string): ProcessTarget | null {
+  const match = prUrl
+    .trim()
+    .match(/^(?:https?:\/\/)?([^/\s]+)\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)(?:[/?#]|$)/);
+  if (!match) return null;
+  return {
+    host: match[1].toLowerCase(),
+    owner: match[2],
+    repo: match[3],
+    pullNumber: Number(match[4])
+  };
 }
 
 interface ReviewComment {
@@ -1931,57 +2388,143 @@ async function handleProcessRequest(
   if (!config || !config.model) {
     return json({ ok: true, triage: "disabled" }, 200);
   }
-  if (!env.GITHUB_APP_ID || !env.GITHUB_APP_PRIVATE_KEY) {
+
+  // Route github.com PRs to the github.com App, GHE PRs to the GHE App + REST
+  // base. An unknown host (e.g. GHE not configured on this worker) is rejected
+  // rather than silently processed against the wrong tenant.
+  const isGhe = isGheHost(target.host, env);
+  if (!isGhe && target.host !== "github.com" && target.host !== "www.github.com") {
+    throw new HttpError(400, "invalid_pr_url");
+  }
+  if (!isGhe && (!env.GITHUB_APP_ID || !env.GITHUB_APP_PRIVATE_KEY)) {
     return jsonError(503, "app_unconfigured");
   }
+  const host = resolveGitHubHost(env, isGhe);
 
   const token = await mintInstallationToken(
-    env,
     dependencies,
     target.owner,
-    target.repo
+    target.repo,
+    host
   );
   const comments = await listReviewComments(
     dependencies.fetch,
     token,
     target.owner,
     target.repo,
-    target.pullNumber
+    target.pullNumber,
+    host.apiBase
   );
 
-  const counts = { fix: 0, dismiss: 0, skip: 0 };
+  const counts = { fix: 0, dismiss: 0 };
   const results: {
     comment_id: number;
-    decision: TriageDecision;
+    decision: "fix" | "dismiss";
+    effort?: CommentEffort;
     dismissed?: boolean;
+    dispatch?: string;
   }[] = [];
+
+  // Agent dispatch needs the PR's head branch — fetch it once up front.
+  let headRef: string | undefined;
+  if (agentDispatchConfigured(env)) {
+    // Extract fetch into a local — calling dependencies.fetch(...) method-style
+    // binds this=dependencies, which Cloudflare's native fetch rejects
+    // ("Illegal invocation"). See performBillingApiLookup.
+    const fetchFn: typeof fetch = dependencies.fetch;
+    try {
+      const r = await fetchFn(
+        `${host.apiBase}/repos/${encodeURIComponent(target.owner)}/` +
+          `${encodeURIComponent(target.repo)}/pulls/${target.pullNumber}`,
+        { headers: githubHeaders(token) }
+      );
+      if (r.ok) {
+        const prBody = await r.json();
+        if (isRecord(prBody) && isRecord(prBody.head)) headRef = asString(prBody.head.ref);
+      }
+    } catch {
+      // fall back to the Routine/queue path below
+    }
+  }
 
   for (const comment of comments) {
     if (!comment.isCopilot) continue;
-    const decision = await classifyComment(
+    const triage = await classifyComment(
       dependencies.fetch,
       config,
       comment.body,
       { path: comment.path, diffHunk: comment.diffHunk }
     );
-    counts[decision] += 1;
-    if (decision === "dismiss") {
+    counts[triage.decision] += 1;
+    if (triage.decision === "dismiss") {
       const dismissed = await dismissReviewComment(
         dependencies.fetch,
         token,
         target.owner,
         target.repo,
         target.pullNumber,
-        comment.id
+        comment.id,
+        host.graphqlUrl
       );
-      results.push({ comment_id: comment.id, decision, dismissed });
+      results.push({ comment_id: comment.id, decision: "dismiss", dismissed });
+    } else if (agentDispatchConfigured(env) && headRef) {
+      // "fix" → the Agent SDK dispatcher (clones, edits, commits inline or PRs
+      // by effort). Fans the action across every Copilot comment on the PR.
+      const dispatched = await dispatchToAgent(env, dependencies, {
+        repo: `${target.owner}/${target.repo}`,
+        branch: headRef,
+        pr: target.pullNumber,
+        comment: comment.body,
+        effort: triage.effort,
+        file: comment.path,
+        reason: triage.reason
+      });
+      results.push({
+        comment_id: comment.id, decision: "fix", effort: triage.effort, dispatch: dispatched.status
+      });
     } else {
-      results.push({ comment_id: comment.id, decision });
+      // No agent configured (or head ref unavailable): fall back to the
+      // Routine/queue (no-op when that's unconfigured too).
+      const dispatched = await enqueueDispatch(env, dependencies, {
+        repo: `${target.owner}/${target.repo}`,
+        pr: target.pullNumber,
+        instruction:
+          `Address this Copilot review comment on ` +
+          `${target.owner}/${target.repo}#${target.pullNumber}` +
+          (comment.path ? ` (${comment.path})` : "") +
+          `: ${comment.body}`,
+        source: "process"
+      });
+      results.push({
+        comment_id: comment.id, decision: "fix", effort: triage.effort, dispatch: dispatched.status
+      });
     }
   }
 
+  // GitHub Advanced Security: triage the PR's open code-scanning alerts too.
+  // Best-effort and additive — never alters the Copilot-comment fields above.
+  const alerts = codeScanningEnabled(env)
+    ? await triageCodeScanningAlerts(
+        env,
+        dependencies,
+        config,
+        host,
+        target.owner,
+        target.repo,
+        target.pullNumber,
+        headRef
+      )
+    : undefined;
+
   return json(
-    { ok: true, pull: target.pullNumber, processed: results.length, counts, results },
+    {
+      ok: true,
+      pull: target.pullNumber,
+      processed: results.length,
+      counts,
+      results,
+      ...(alerts ? { alerts } : {})
+    },
     200
   );
 }
@@ -1999,14 +2542,12 @@ async function readProcessTarget(request: Request): Promise<ProcessTarget> {
 
   const prUrl = asString(value.pr_url);
   if (prUrl) {
-    const match = prUrl.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
-    if (!match) {
+    const target = parsePrUrl(prUrl);
+    if (!target) {
       throw new HttpError(400, "invalid_pr_url");
     }
-    const owner = match[1];
-    const repo = match[2];
-    assertRepositoryParts(owner, repo);
-    return { owner, repo, pullNumber: Number(match[3]) };
+    assertRepositoryParts(target.owner, target.repo);
+    return target;
   }
 
   const owner = asString(value.owner);
@@ -2016,7 +2557,8 @@ async function readProcessTarget(request: Request): Promise<ProcessTarget> {
     throw new HttpError(400, "missing_required_fields");
   }
   assertRepositoryParts(owner, repo);
-  return { owner, repo, pullNumber };
+  const host = asString(value.host)?.trim().toLowerCase() || "github.com";
+  return { host, owner, repo, pullNumber };
 }
 
 async function listReviewComments(
@@ -2024,10 +2566,11 @@ async function listReviewComments(
   token: string,
   owner: string,
   repo: string,
-  pullNumber: number
+  pullNumber: number,
+  apiBase: string = GITHUB_API_BASE
 ): Promise<ReviewComment[]> {
   const url =
-    `https://api.github.com/repos/${encodeURIComponent(owner)}/` +
+    `${apiBase}/repos/${encodeURIComponent(owner)}/` +
     `${encodeURIComponent(repo)}/pulls/${pullNumber}/comments?per_page=100`;
   const response = await doFetch(url, { headers: githubHeaders(token) });
   if (!response.ok) {
@@ -2318,10 +2861,11 @@ async function readTokenRequest(request: Request): Promise<TokenRequest> {
 async function verifyOidc(
   token: string,
   audience: string | string[],
-  deps: Dependencies
+  deps: Dependencies,
+  trustedIssuers?: string[]
 ): Promise<VerifiedOidcPayload> {
   try {
-    return await deps.verifyOidcToken(token, audience);
+    return await deps.verifyOidcToken(token, audience, trustedIssuers);
   } catch {
     throw new OidcVerificationError();
   }
@@ -2329,10 +2873,19 @@ async function verifyOidc(
 
 async function verifyOidcToken(
   token: string,
-  audience: string | string[]
+  audience: string | string[],
+  trustedIssuers: string[] = [GITHUB_OIDC_ISSUER]
 ): Promise<VerifiedOidcPayload> {
-  const { payload } = await jwtVerify(token, remoteJwks, {
-    issuer: GITHUB_OIDC_ISSUER,
+  // github.com and each GHE tenant sign with different keys, so pick the JWKS by
+  // the token's (still-unverified) issuer — but only when it's on the trust list,
+  // then pin that issuer in jwtVerify so a forged `iss` can't select a foreign key.
+  const claimedIssuer = decodeJwt(token).iss;
+  const issuer =
+    claimedIssuer && trustedIssuers.includes(claimedIssuer)
+      ? claimedIssuer
+      : GITHUB_OIDC_ISSUER;
+  const { payload } = await jwtVerify(token, jwksForIssuer(issuer), {
+    issuer,
     audience
   });
   return payload;
@@ -2358,14 +2911,76 @@ async function createGitHubAppJwt(
   }
 }
 
+// Where (and as whom) to talk to GitHub: App credentials plus the REST/GraphQL
+// endpoints. github.com by default, or the configured GHE tenant when isGhe.
+interface GitHubHost {
+  appId: string;
+  privateKey: string;
+  apiBase: string;
+  graphqlUrl: string;
+  installationId?: string;
+}
+
+// Derive the GraphQL endpoint from a REST API base. github.com serves GraphQL at
+// /graphql on the same host; GHE (ghe.com / GHES) serves REST at <host>/api/v3
+// and GraphQL at <host>/api/graphql.
+function graphqlUrlForApiBase(apiBase: string): string {
+  const restSuffix = "/api/v3";
+  if (apiBase.endsWith(restSuffix)) {
+    return `${apiBase.slice(0, -restSuffix.length)}/api/graphql`;
+  }
+  return `${apiBase}/graphql`;
+}
+
+function resolveGitHubHost(env: BrokerEnv, isGhe: boolean): GitHubHost {
+  if (isGhe) {
+    const apiBase = normalizeBaseUrl(
+      requiredSecret(env.GHE_API_BASE, "GHE_API_BASE")
+    );
+    return {
+      appId: requiredSecret(env.GHE_GITHUB_APP_ID, "GHE_GITHUB_APP_ID"),
+      privateKey: requiredSecret(
+        env.GHE_GITHUB_APP_PRIVATE_KEY,
+        "GHE_GITHUB_APP_PRIVATE_KEY"
+      ),
+      apiBase,
+      graphqlUrl: graphqlUrlForApiBase(apiBase),
+      installationId: env.GHE_GITHUB_APP_INSTALLATION_ID
+    };
+  }
+  return {
+    appId: requiredSecret(env.GITHUB_APP_ID, "GITHUB_APP_ID"),
+    privateKey: requiredSecret(env.GITHUB_APP_PRIVATE_KEY, "GITHUB_APP_PRIVATE_KEY"),
+    apiBase: GITHUB_API_BASE,
+    graphqlUrl: GITHUB_GRAPHQL_URL,
+    installationId: undefined
+  };
+}
+
+// Does a PR's web host belong to the configured GHE tenant? Matched against the
+// GHE REST API host (from GHE_API_BASE), tolerating the ghe.com data-residency
+// "api." prefix (web host <tenant>.ghe.com ↔ API host api.<tenant>.ghe.com).
+function isGheHost(host: string, env: BrokerEnv): boolean {
+  if (!env.GHE_API_BASE) return false;
+  let gheApiHost: string;
+  try {
+    gheApiHost = new URL(normalizeBaseUrl(env.GHE_API_BASE)).host.toLowerCase();
+  } catch {
+    return false;
+  }
+  const candidate = host.toLowerCase();
+  return candidate === gheApiHost || `api.${candidate}` === gheApiHost;
+}
+
 async function findInstallationId(
   githubFetch: typeof fetch,
   appJwt: string,
   owner: string,
-  repo: string
+  repo: string,
+  apiBase: string = GITHUB_API_BASE
 ): Promise<number> {
   const response = await githubFetch(
-    `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/installation`,
+    `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/installation`,
     {
       headers: githubHeaders(appJwt)
     }
@@ -2392,10 +3007,11 @@ async function createInstallationToken(
   appJwt: string,
   installationId: number,
   repo: string,
-  permissions: TokenPermissions
+  permissions: TokenPermissions,
+  apiBase: string = GITHUB_API_BASE
 ): Promise<{ token: string; expires_at: string }> {
   const response = await githubFetch(
-    `https://api.github.com/app/installations/${installationId}/access_tokens`,
+    `${apiBase}/app/installations/${installationId}/access_tokens`,
     {
       method: "POST",
       headers: {
@@ -3048,6 +3664,82 @@ interface DispatchResult {
   session_url?: string;
 }
 
+interface AgentDispatchRequest {
+  repo: string; // owner/name
+  branch: string; // the PR's head branch
+  pr: number;
+  comment: string;
+  effort: CommentEffort;
+  file?: string;
+  reason?: string;
+}
+
+function agentDispatchConfigured(env: BrokerEnv): boolean {
+  return !!env.DISPATCH_AGENT_URL && env.DISPATCH_AGENT_URL.trim() !== "" &&
+         !!env.DISPATCH_AGENT_TOKEN && env.DISPATCH_AGENT_TOKEN.trim() !== "";
+}
+
+// Hand a "fix" off to the self-hosted Claude Agent SDK dispatcher
+// (diatreme-pro POST /api/dispatch), which clones, edits, and commits/PRs by
+// effort. Bearer-gated; sends Cloudflare Access service-token headers too when
+// configured (the dispatcher sits behind CF Access). The endpoint returns 202
+// and works in the background, so we only surface the accept/handoff status.
+async function dispatchToAgent(
+  env: BrokerEnv,
+  dependencies: Dependencies,
+  req: AgentDispatchRequest
+): Promise<{ status: string }> {
+  const url = env.DISPATCH_AGENT_URL?.trim();
+  if (!url) return { status: "agent_unconfigured" };
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${env.DISPATCH_AGENT_TOKEN ?? ""}`,
+    "content-type": "application/json"
+  };
+  const cfId = env.DISPATCH_AGENT_CF_ACCESS_CLIENT_ID?.trim();
+  const cfSecret = (
+    env.DISPATCH_AGENT_CF_ACCESS_CLIENT_SECRET ?? env.DISPATCH_AGENT_CF_ACCESS_SECRET
+  )?.trim();
+  if (cfId && cfSecret) {
+    headers["CF-Access-Client-Id"] = cfId;
+    headers["CF-Access-Client-Secret"] = cfSecret;
+  }
+  // Local fetch ref — calling dependencies.fetch(...) method-style binds
+  // this=dependencies and Cloudflare rejects it ("Illegal invocation").
+  const fetchFn: typeof fetch = dependencies.fetch;
+  try {
+    const resp = await fetchFn(url, {
+      method: "POST",
+      headers,
+      // Do NOT follow redirects: a Cloudflare Access challenge answers an
+      // unauthenticated POST with a 302 to its login page. Following it would
+      // turn into a GET that returns 200, masquerading as a successful dispatch.
+      redirect: "manual",
+      body: JSON.stringify({
+        repo: req.repo,
+        branch: req.branch,
+        pr: req.pr,
+        file: req.file,
+        comment: req.comment,
+        reason: req.reason,
+        effort: req.effort
+      })
+    });
+    const ct = resp.headers.get("content-type") ?? "";
+    // The dispatcher answers with JSON. A 2xx that ISN'T JSON is a Cloudflare
+    // Access interstitial (login HTML) — our service token wasn't accepted, so
+    // the request never reached the dispatcher. Don't report that as success.
+    if (resp.ok && ct.includes("application/json")) return { status: "agent_accepted" };
+    if (resp.ok) return { status: "agent_error_access_html" };
+    // A redirect means CF Access bounced us (bad/absent service token).
+    if (resp.status === 0 || (resp.status >= 300 && resp.status < 400)) {
+      return { status: "agent_error_access_redirect" };
+    }
+    return { status: `agent_error_${resp.status}` };
+  } catch {
+    return { status: "agent_unreachable" };
+  }
+}
+
 async function enqueueDispatch(
   env: BrokerEnv,
   dependencies: Dependencies,
@@ -3079,12 +3771,15 @@ async function enqueueDispatch(
   }
 
   try {
+    // Local fetch ref — dependencies.fetch(...) method-style throws "Illegal
+    // invocation" on Cloudflare's native fetch.
+    const fetchFn: typeof fetch = dependencies.fetch;
     // With a routine token, fire the Claude Code on the Web routine: POST
     // {text} + the Anthropic beta headers; the routine's saved prompt clones,
     // implements, and opens the PR. We capture the returned session id/url for
     // traceability (and to put in the eventual PR body).
     if (env.DISPATCH_ROUTINE_TOKEN) {
-      const resp = await dependencies.fetch(triggerUrl, {
+      const resp = await fetchFn(triggerUrl, {
         method: "POST",
         headers: {
           authorization: `Bearer ${env.DISPATCH_ROUTINE_TOKEN}`,
@@ -3110,7 +3805,7 @@ async function enqueueDispatch(
     }
 
     // No routine token → plain webhook POST (self-hosted runner).
-    const resp = await dependencies.fetch(triggerUrl, {
+    const resp = await fetchFn(triggerUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(record)

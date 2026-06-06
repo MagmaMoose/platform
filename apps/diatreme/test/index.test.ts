@@ -25,6 +25,7 @@ function deps(options: {
   repository?: string;
   githubResponses?: Response[];
   verifyThrows?: boolean;
+  iss?: string;
 } = {}) {
   const calls: Request[] = [];
   const githubResponses = [...(options.githubResponses ?? [])];
@@ -37,7 +38,8 @@ function deps(options: {
           throw new Error("bad oidc");
         }
         return {
-          repository: options.repository ?? "octo-org/octo-repo"
+          repository: options.repository ?? "octo-org/octo-repo",
+          ...(options.iss ? { iss: options.iss } : {})
         };
       },
       createGitHubAppJwt: async () => "app.jwt",
@@ -185,6 +187,84 @@ describe("token broker", () => {
         pull_requests: "write"
       }
     });
+  });
+
+  const GHE_ENV: BrokerEnv = {
+    ...env,
+    GHE_OIDC_ISSUER: "https://token.actions.acme.ghe.com",
+    GHE_API_BASE: "https://acme.ghe.com/api/v3",
+    GHE_GITHUB_APP_ID: "99",
+    GHE_GITHUB_APP_PRIVATE_KEY:
+      "-----BEGIN PRIVATE KEY-----\\nghe\\n-----END PRIVATE KEY-----"
+  };
+
+  it("mints a GHE token against the GHE API base when the issuer is the GHE tenant", async () => {
+    const { calls, deps: injected } = deps({
+      iss: "https://token.actions.acme.ghe.com",
+      githubResponses: [
+        Response.json({ id: 7 }),
+        Response.json({ token: "ghe-token", expires_at: "2026-05-03T13:00:00Z" })
+      ]
+    });
+    const response = await handleRequest(
+      tokenRequest({ oidcToken: "valid.jwt", owner: "octo-org", repo: "octo-repo" }),
+      GHE_ENV,
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({
+      token: "ghe-token",
+      expires_at: "2026-05-03T13:00:00Z",
+      repository: "octo-org/octo-repo"
+    });
+    // Both GitHub calls hit the GHE REST API, never api.github.com.
+    expect(calls[0].url).toBe(
+      "https://acme.ghe.com/api/v3/repos/octo-org/octo-repo/installation"
+    );
+    expect(calls[1].url).toBe(
+      "https://acme.ghe.com/api/v3/app/installations/7/access_tokens"
+    );
+  });
+
+  it("skips the GHE installation lookup when GHE_GITHUB_APP_INSTALLATION_ID is set", async () => {
+    const { calls, deps: injected } = deps({
+      iss: "https://token.actions.acme.ghe.com",
+      githubResponses: [
+        Response.json({ token: "ghe-token", expires_at: "2026-05-03T13:00:00Z" })
+      ]
+    });
+    const response = await handleRequest(
+      tokenRequest({ oidcToken: "valid.jwt", owner: "octo-org", repo: "octo-repo" }),
+      { ...GHE_ENV, GHE_GITHUB_APP_INSTALLATION_ID: "555" },
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    // Only the token-create call is made; the per-repo lookup is skipped.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe(
+      "https://acme.ghe.com/api/v3/app/installations/555/access_tokens"
+    );
+  });
+
+  it("still mints via github.com for tokens whose issuer is not the GHE tenant", async () => {
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({ id: 42 }),
+        Response.json({ token: "dotcom-token", expires_at: "2026-05-03T13:00:00Z" })
+      ]
+    });
+    const response = await handleRequest(
+      tokenRequest({ oidcToken: "valid.jwt", owner: "octo-org", repo: "octo-repo" }),
+      GHE_ENV, // GHE configured, but this token carries no GHE issuer
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    expect(calls[0].url).toBe(
+      "https://api.github.com/repos/octo-org/octo-repo/installation"
+    );
   });
 
   it("accepts GitHub-style PKCS#1 RSA private keys", async () => {
@@ -1285,7 +1365,7 @@ describe("Copilot comment triage", () => {
     expect(calls[4].url).toContain("/graphql");
   });
 
-  it("treats skip as a no-op (classification only, no GitHub calls)", async () => {
+  it("treats an unsure/skip reply as a large-effort fix (never a no-op)", async () => {
     const { calls, deps: injected } = deps({
       githubResponses: [anthropicReply("skip")]
     });
@@ -1297,12 +1377,11 @@ describe("Copilot comment triage", () => {
       triageEnv,
       injected
     );
-    expect(await readJson(response)).toEqual({
-      ok: true,
-      decision: "skip",
-      action: "none"
-    });
-    expect(calls.length).toBe(1);
+    const out = await readJson(response);
+    expect(out.decision).toBe("fix"); // skip ⇒ fix
+    expect(out.effort).toBe("large"); // unsure ⇒ large effort
+    expect(out.action).toBe("dispatched"); // no agent configured ⇒ Routine/queue
+    expect(calls.length).toBe(1); // only the classify call (queued, no fetch)
   });
 
   it("dispatches an autonomous task when a comment classifies as fix", async () => {
@@ -1321,6 +1400,60 @@ describe("Copilot comment triage", () => {
     expect(out.decision).toBe("fix");
     expect(out.action).toBe("dispatched");
     expect(typeof out.dispatch_id).toBe("string");
+  });
+
+  it("routes a fix to the Agent SDK dispatcher when DISPATCH_AGENT_URL is set", async () => {
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({
+          content: [
+            { type: "text", text: '{"decision":"fix","effort":"basic","reason":"null check"}' }
+          ]
+        }), // classify
+        Response.json({ accepted: true }, { status: 202 }) // the agent dispatcher
+      ]
+    });
+    const payload = reviewCommentPayload({
+      pull_request: {
+        number: 7,
+        author_association: "OWNER",
+        user: { login: "trusted-dev" },
+        head: { ref: "feature-branch" }
+      }
+    });
+    const body = JSON.stringify(payload);
+    const sig = await hmac("shh", body);
+    const response = await handleRequest(
+      reviewCommentRequest(payload, sig),
+      {
+        ...triageEnv,
+        DISPATCH_AGENT_URL: "https://diatreme.example/api/dispatch",
+        DISPATCH_AGENT_TOKEN: "agent-secret",
+        DISPATCH_AGENT_CF_ACCESS_CLIENT_ID: "cf-id",
+        DISPATCH_AGENT_CF_ACCESS_CLIENT_SECRET: "cf-secret"
+      },
+      injected
+    );
+    expect(await readJson(response)).toMatchObject({
+      ok: true,
+      decision: "fix",
+      effort: "basic",
+      action: "agent",
+      status: "agent_accepted"
+    });
+    // POST to the agent with the bearer + CF Access service token + structured body.
+    const agentCall = calls[1];
+    expect(agentCall.url).toBe("https://diatreme.example/api/dispatch");
+    expect(agentCall.headers.get("authorization")).toBe("Bearer agent-secret");
+    expect(agentCall.headers.get("cf-access-client-id")).toBe("cf-id");
+    expect(agentCall.headers.get("cf-access-client-secret")).toBe("cf-secret");
+    expect((await agentCall.json()) as Record<string, unknown>).toMatchObject({
+      repo: "octo-org/octo-repo",
+      branch: "feature-branch",
+      pr: 7,
+      effort: "basic",
+      file: "src/x.ts"
+    });
   });
 
   it("routes OpenAI-compatible providers (DeepSeek) to /chat/completions", async () => {
@@ -1343,11 +1476,9 @@ describe("Copilot comment triage", () => {
       },
       injected
     );
-    expect(await readJson(response)).toEqual({
-      ok: true,
-      decision: "skip",
-      action: "none"
-    });
+    const out = await readJson(response);
+    expect(out.decision).toBe("fix"); // skip ⇒ fix (never a no-op)
+    expect(out.action).toBe("dispatched");
     expect(calls[0].url).toContain("api.deepseek.com");
     expect(calls[0].url).toContain("/chat/completions");
   });
@@ -1395,11 +1526,9 @@ describe("Copilot comment triage", () => {
       { ...triageEnv, TRIAGE_TRUSTED_USERS: "trusted-contractor" },
       injected
     );
-    expect(await readJson(response)).toEqual({
-      ok: true,
-      decision: "skip",
-      action: "none"
-    });
+    const out = await readJson(response);
+    expect(out.decision).toBe("fix"); // trusted gate passed → classified (skip ⇒ fix)
+    expect(out.action).toBe("dispatched");
   });
 });
 // ─── /oauth ──────────────────────────────────────────────────────────
@@ -1674,12 +1803,489 @@ describe("POST /process", () => {
       ok: true,
       pull: 7,
       processed: 2,
-      counts: { fix: 0, dismiss: 1, skip: 1 },
+      counts: { fix: 1, dismiss: 1 },
       results: [
         { comment_id: 111, decision: "dismiss", dismissed: true },
-        { comment_id: 333, decision: "skip" }
+        { comment_id: 333, decision: "fix", effort: "large", dispatch: "queued_no_kv" }
       ]
     });
+  });
+
+  it("dispatches a fix for a 'fix' decision (comment-commander parity)", async () => {
+    const processEnv: BrokerEnv = {
+      ...env,
+      PROCESS_TRIGGER_SECRET: "trigger",
+      TRIAGE_LLM_API_KEY: "sk-test",
+      TRIAGE_LLM_PROVIDER: "anthropic"
+    };
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({ id: 42 }), // installation lookup
+        Response.json({ token: "ghs_x", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([
+          {
+            id: 111,
+            user: { login: "copilot-pull-request-reviewer[bot]" },
+            body: "this leaks a handle",
+            path: "a.ts",
+            diff_hunk: "@@"
+          }
+        ]), // list review comments
+        anthropicReply("fix") // classify #111
+      ]
+    });
+
+    const response = await handleRequest(
+      processRequest({ pr_url: PR_URL }, { authorization: "Bearer trigger" }),
+      processEnv,
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      pull: 7,
+      processed: 1,
+      counts: { fix: 1, dismiss: 0 },
+      // No agent / DISPATCH_TRIGGER_URL / KV, so the fix is queued only.
+      results: [{ comment_id: 111, decision: "fix", effort: "large", dispatch: "queued_no_kv" }]
+    });
+    // install + token + list-comments + classify = 4. Dispatch was queued, not
+    // fired (no trigger URL), so it added no 5th HTTP call.
+    expect(calls).toHaveLength(4);
+  });
+
+  const GHE_PROCESS_ENV: BrokerEnv = {
+    ...env,
+    PROCESS_TRIGGER_SECRET: "trigger",
+    TRIAGE_LLM_API_KEY: "sk-test",
+    TRIAGE_LLM_PROVIDER: "anthropic",
+    GHE_API_BASE: "https://acme.ghe.com/api/v3",
+    GHE_GITHUB_APP_ID: "99",
+    GHE_GITHUB_APP_PRIVATE_KEY:
+      "-----BEGIN PRIVATE KEY-----\\nghe\\n-----END PRIVATE KEY-----"
+  };
+
+  const GHE_PR_URL = "https://acme.ghe.com/octo-org/octo-repo/pull/7";
+
+  it("routes a GHE PR's token, REST and GraphQL calls to the GHE host", async () => {
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({ id: 7 }), // GHE installation lookup
+        Response.json({ token: "ghs_ghe", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([
+          {
+            id: 111,
+            user: { login: "copilot-pull-request-reviewer[bot]" },
+            body: "unused variable",
+            path: "a.ts",
+            diff_hunk: "@@"
+          }
+        ]), // list review comments
+        anthropicReply("dismiss"), // classify #111
+        Response.json({
+          data: {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  nodes: [
+                    {
+                      id: "T1",
+                      isResolved: false,
+                      comments: { nodes: [{ databaseId: 111 }] }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }), // graphql query
+        Response.json({
+          data: { resolveReviewThread: { thread: { isResolved: true } } }
+        }) // graphql mutation
+      ]
+    });
+
+    const response = await handleRequest(
+      processRequest({ pr_url: GHE_PR_URL }, { authorization: "Bearer trigger" }),
+      GHE_PROCESS_ENV,
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      pull: 7,
+      processed: 1,
+      counts: { fix: 0, dismiss: 1 },
+      results: [{ comment_id: 111, decision: "dismiss", dismissed: true }]
+    });
+
+    // Every GitHub call hits the GHE tenant — never api.github.com.
+    expect(calls[0].url).toBe(
+      "https://acme.ghe.com/api/v3/repos/octo-org/octo-repo/installation"
+    );
+    expect(calls[1].url).toBe(
+      "https://acme.ghe.com/api/v3/app/installations/7/access_tokens"
+    );
+    expect(calls[2].url).toBe(
+      "https://acme.ghe.com/api/v3/repos/octo-org/octo-repo/pulls/7/comments?per_page=100"
+    );
+    expect(calls[4].url).toBe("https://acme.ghe.com/api/graphql");
+    expect(calls[5].url).toBe("https://acme.ghe.com/api/graphql");
+    // Parse the host for an exact compare — a substring check would match
+    // arbitrary URLs that merely contain "api.github.com" (CodeQL: incomplete
+    // URL substring sanitization).
+    expect(calls.some((c) => new URL(c.url).host === "api.github.com")).toBe(
+      false
+    );
+  });
+
+  it("routes a GHE PR with data-residency API base (api.<tenant>.ghe.com)", async () => {
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({ id: 7 }),
+        Response.json({ token: "ghs_ghe", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([
+          {
+            id: 111,
+            user: { login: "copilot-pull-request-reviewer[bot]" },
+            body: "unused variable",
+            path: "a.ts",
+            diff_hunk: "@@"
+          }
+        ]),
+        anthropicReply("dismiss"),
+        Response.json({
+          data: {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  nodes: [
+                    {
+                      id: "T1",
+                      isResolved: false,
+                      comments: { nodes: [{ databaseId: 111 }] }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }),
+        Response.json({
+          data: { resolveReviewThread: { thread: { isResolved: true } } }
+        })
+      ]
+    });
+
+    const gheApiBaseDataResidency: BrokerEnv = {
+      ...GHE_PROCESS_ENV,
+      GHE_API_BASE: "https://api.acme.ghe.com"
+    };
+
+    const response = await handleRequest(
+      processRequest({ pr_url: GHE_PR_URL }, { authorization: "Bearer trigger" }),
+      gheApiBaseDataResidency,
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      pull: 7,
+      processed: 1,
+      counts: { fix: 0, dismiss: 1 },
+      results: [{ comment_id: 111, decision: "dismiss", dismissed: true }]
+    });
+
+    // REST calls hit api.acme.ghe.com, GraphQL also.
+    expect(calls[0].url).toBe(
+      "https://api.acme.ghe.com/repos/octo-org/octo-repo/installation"
+    );
+    expect(calls[1].url).toBe(
+      "https://api.acme.ghe.com/app/installations/7/access_tokens"
+    );
+    expect(calls[2].url).toBe(
+      "https://api.acme.ghe.com/repos/octo-org/octo-repo/pulls/7/comments?per_page=100"
+    );
+    expect(calls[4].url).toBe("https://api.acme.ghe.com/graphql");
+    expect(calls[5].url).toBe("https://api.acme.ghe.com/graphql");
+    // Ensure no github.com calls.
+    expect(calls.some((c) => new URL(c.url).host === "api.github.com")).toBe(
+      false
+    );
+  });
+
+  it("skips the GHE installation lookup when GHE_GITHUB_APP_INSTALLATION_ID is set", async () => {
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({ token: "ghs_ghe", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([]) // no comments
+      ]
+    });
+
+    const response = await handleRequest(
+      processRequest({ pr_url: GHE_PR_URL }, { authorization: "Bearer trigger" }),
+      { ...GHE_PROCESS_ENV, GHE_GITHUB_APP_INSTALLATION_ID: "555" },
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    // First call is the token-create against the fixed installation; no lookup.
+    expect(calls[0].url).toBe(
+      "https://acme.ghe.com/api/v3/app/installations/555/access_tokens"
+    );
+  });
+
+  it("rejects an unrecognized host with 400 invalid_pr_url", async () => {
+    const response = await handleRequest(
+      processRequest(
+        { pr_url: "https://evil.example.com/octo-org/octo-repo/pull/7" },
+        { authorization: "Bearer trigger" }
+      ),
+      GHE_PROCESS_ENV,
+      deps().deps
+    );
+
+    expect(response.status).toBe(400);
+    expect(await readJson(response)).toEqual({ error: "invalid_pr_url" });
+  });
+
+  it("rejects a GHE host when GHE is not configured on the worker", async () => {
+    const response = await handleRequest(
+      processRequest(
+        { pr_url: GHE_PR_URL },
+        { authorization: "Bearer trigger" }
+      ),
+      {
+        ...env,
+        PROCESS_TRIGGER_SECRET: "trigger",
+        TRIAGE_LLM_API_KEY: "sk-test",
+        TRIAGE_LLM_PROVIDER: "anthropic"
+      },
+      deps().deps
+    );
+
+    expect(response.status).toBe(400);
+    expect(await readJson(response)).toEqual({ error: "invalid_pr_url" });
+  });
+
+  // ─── GitHub Advanced Security (code scanning) triage ───────────────────────
+
+  const CS_ENV: BrokerEnv = {
+    ...env,
+    PROCESS_TRIGGER_SECRET: "trigger",
+    TRIAGE_LLM_API_KEY: "sk-test",
+    TRIAGE_LLM_PROVIDER: "anthropic",
+    TRIAGE_CODE_SCANNING: "true"
+  };
+
+  it("triages code-scanning alerts (dismiss / fix / skip) when enabled", async () => {
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({ id: 42 }), // main installation lookup
+        Response.json({ token: "ghs_main", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([]), // listReviewComments — no Copilot comments
+        Response.json({ id: 42 }), // GHAS installation lookup
+        Response.json({ token: "ghs_sec", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([
+          {
+            number: 11,
+            state: "open",
+            rule: {
+              id: "js/incomplete-url-substring-sanitization",
+              description: "Incomplete URL substring sanitization",
+              security_severity_level: "high"
+            },
+            most_recent_instance: {
+              location: { path: "worker/test/index.test.ts", start_line: 1843 },
+              message: { text: "'api.github.com' can be anywhere in the URL" }
+            },
+            tool: { name: "CodeQL" }
+          },
+          {
+            number: 22,
+            state: "open",
+            rule: { id: "py/sql-injection", security_severity_level: "critical" },
+            most_recent_instance: {
+              location: { path: "app.py", start_line: 10 },
+              message: { text: "SQL injection" }
+            },
+            tool: { name: "CodeQL" }
+          },
+          {
+            number: 33,
+            state: "open",
+            rule: { id: "js/unused-local-variable" },
+            most_recent_instance: {
+              location: { path: "x.ts", start_line: 2 },
+              message: { text: "Unused variable" }
+            },
+            tool: { name: "CodeQL" }
+          }
+        ]), // listCodeScanningAlerts
+        anthropicReply("dismiss"), // classify alert #11
+        Response.json({ number: 11, state: "dismissed" }), // PATCH dismiss #11
+        anthropicReply("fix"), // classify alert #22 (dispatch is a no-op here)
+        anthropicReply("skip") // classify alert #33
+      ]
+    });
+
+    const response = await handleRequest(
+      processRequest({ pr_url: PR_URL }, { authorization: "Bearer trigger" }),
+      CS_ENV,
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({
+      ok: true,
+      pull: 7,
+      processed: 0,
+      counts: { fix: 0, dismiss: 0 },
+      results: [],
+      alerts: {
+        available: true,
+        processed: 3,
+        counts: { fix: 1, dismiss: 1, skip: 1 },
+        results: [
+          {
+            alert_number: 11,
+            rule: "js/incomplete-url-substring-sanitization",
+            decision: "dismiss",
+            dismissed: true
+          },
+          {
+            alert_number: 22,
+            rule: "py/sql-injection",
+            decision: "fix",
+            dispatch: "queued_no_kv"
+          },
+          { alert_number: 33, rule: "js/unused-local-variable", decision: "skip" }
+        ]
+      }
+    });
+
+    // The GHAS token requested security_events; the alert was dismissed via PATCH.
+    const ghasTokenBody = (await calls[4].json()) as Record<string, unknown>;
+    expect(ghasTokenBody.permissions).toEqual({ security_events: "write" });
+    expect(calls[5].url).toContain("/code-scanning/alerts?state=open");
+    expect(calls[5].url).toContain("ref=refs%2Fpull%2F7%2Fhead");
+    expect(calls[7].url).toBe(
+      "https://api.github.com/repos/octo-org/octo-repo/code-scanning/alerts/11"
+    );
+    expect(calls[7].method).toBe("PATCH");
+  });
+
+  it("routes a code-scanning fix to the Agent SDK dispatcher when configured", async () => {
+    const { calls, deps: injected } = deps({
+      githubResponses: [
+        Response.json({ id: 42 }), // main installation lookup
+        Response.json({ token: "ghs_main", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([]), // listReviewComments — no Copilot comments
+        Response.json({ head: { ref: "feature-branch" } }), // PR head ref (agent configured)
+        Response.json({ id: 42 }), // GHAS installation lookup
+        Response.json({ token: "ghs_sec", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([
+          {
+            number: 22,
+            state: "open",
+            rule: { id: "py/sql-injection", security_severity_level: "critical" },
+            most_recent_instance: {
+              location: { path: "app.py", start_line: 10 },
+              message: { text: "SQL injection" }
+            },
+            tool: { name: "CodeQL" }
+          }
+        ]), // listCodeScanningAlerts
+        anthropicReply("fix"), // classify alert #22
+        Response.json({ accepted: true }, { status: 202 }) // the agent dispatcher
+      ]
+    });
+
+    const response = await handleRequest(
+      processRequest({ pr_url: PR_URL }, { authorization: "Bearer trigger" }),
+      {
+        ...CS_ENV,
+        DISPATCH_AGENT_URL: "https://diatreme.example/api/dispatch",
+        DISPATCH_AGENT_TOKEN: "agent-secret"
+      },
+      injected
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await readJson(response)) as Record<string, any>;
+    expect(body.alerts.results[0]).toEqual({
+      alert_number: 22,
+      rule: "py/sql-injection",
+      decision: "fix",
+      dispatch: "agent_accepted"
+    });
+
+    // Handed to the agent — inline (medium effort) on the PR's own branch.
+    const agentCall = calls.find((c) => c.url === "https://diatreme.example/api/dispatch");
+    expect(agentCall).toBeDefined();
+    expect(agentCall!.headers.get("authorization")).toBe("Bearer agent-secret");
+    expect((await agentCall!.json()) as Record<string, unknown>).toMatchObject({
+      repo: "octo-org/octo-repo",
+      branch: "feature-branch",
+      pr: 7,
+      file: "app.py",
+      reason: "py/sql-injection",
+      effort: "medium"
+    });
+  });
+
+  it("reports code scanning available-but-empty when the API 404s (not enabled)", async () => {
+    const { deps: injected } = deps({
+      githubResponses: [
+        Response.json({ id: 42 }),
+        Response.json({ token: "ghs_main", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([]), // no Copilot comments
+        Response.json({ id: 42 }), // GHAS installation lookup
+        Response.json({ token: "ghs_sec", expires_at: "2026-05-03T13:00:00Z" }),
+        new Response("{}", { status: 404 }) // code scanning not enabled for the ref
+      ]
+    });
+    const response = await handleRequest(
+      processRequest({ pr_url: PR_URL }, { authorization: "Bearer trigger" }),
+      CS_ENV,
+      injected
+    );
+    expect(response.status).toBe(200);
+    const body = await readJson(response);
+    expect(body.alerts).toEqual({
+      available: true,
+      processed: 0,
+      counts: { fix: 0, dismiss: 0, skip: 0 },
+      results: []
+    });
+  });
+
+  it("degrades gracefully (available:false) when the App lacks security_events", async () => {
+    const { deps: injected } = deps({
+      githubResponses: [
+        Response.json({ id: 42 }),
+        Response.json({ token: "ghs_main", expires_at: "2026-05-03T13:00:00Z" }),
+        Response.json([]), // no Copilot comments
+        Response.json({ id: 42 }), // GHAS installation lookup
+        new Response("{}", { status: 403 }) // token mint denied — App lacks the perm
+      ]
+    });
+    const response = await handleRequest(
+      processRequest({ pr_url: PR_URL }, { authorization: "Bearer trigger" }),
+      CS_ENV,
+      injected
+    );
+    // The Copilot-comment run still succeeds; GHAS just reports unavailable.
+    expect(response.status).toBe(200);
+    const body = await readJson(response);
+    expect(body.ok).toBe(true);
+    expect((body.alerts as Record<string, unknown>).available).toBe(false);
+    expect((body.alerts as Record<string, unknown>).error).toBe(
+      "github_token_create_failed"
+    );
   });
 });
 

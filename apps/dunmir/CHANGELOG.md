@@ -2,6 +2,52 @@
 
 <!-- version list -->
 
+## v1.25.0 (2026-06-03)
+
+### Bug Fixes
+
+- **agent**: Keep SSH auth-failure messages accurate for key auth
+  ([`3ce1e53`](https://github.com/MagmaMoose/dunmir/commit/3ce1e53ecd6d1e0399aa874096b5e1b04aa1237c))
+
+### Features
+
+- **agent**: Explain SSH auth failures (method vs secret)
+  ([`3f72815`](https://github.com/MagmaMoose/dunmir/commit/3f7281545376dbd49dbe225d477051a7c411cf1a))
+
+
+## v1.24.0 (2026-06-03)
+
+### Bug Fixes
+
+- **agent**: Address review on the device-onboarding changes
+  ([`e7f2b2e`](https://github.com/MagmaMoose/dunmir/commit/e7f2b2e6d1382fdd0b51225e40929a96d2cb3e6a))
+
+- **agent**: Degrade gracefully when the managed state dir isn't writable
+  ([`3bd23ba`](https://github.com/MagmaMoose/dunmir/commit/3bd23ba9ff6eb6ec690d2ad46a0780a7970ba36c))
+
+- **worker**: Git-remote endpoint — explicit clears + https-only
+  ([`3d9e293`](https://github.com/MagmaMoose/dunmir/commit/3d9e2936e08bb3304f0bb7445eb54dce30f071ad))
+
+### Features
+
+- **agent**: Apply the control-plane's per-agent offsite git remote
+  ([`39845a0`](https://github.com/MagmaMoose/dunmir/commit/39845a0d8d69ca36dabdd952f73971107f65079f))
+
+- **agent**: Zero-config pipelines, dual-transport probe, RouterBOARD over API
+  ([`a252097`](https://github.com/MagmaMoose/dunmir/commit/a252097cee96d39121c6c6d456dd80e735b47e74))
+
+- **worker**: Per-agent git remote for config-export history
+  ([`5e473a1`](https://github.com/MagmaMoose/dunmir/commit/5e473a17724f2ad5adbb0c04e8e13d5dced06ab4))
+
+
+## v1.23.0 (2026-06-03)
+
+### Features
+
+- **agent**: Report RouterOS version + board over API (no SSH needed)
+  ([`77e6274`](https://github.com/MagmaMoose/dunmir/commit/77e62743cbee8491b97511eb20b0e7d0ee1c610d))
+
+
 ## v1.22.0 (2026-06-03)
 
 ### Features

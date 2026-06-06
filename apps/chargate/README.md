@@ -14,11 +14,4 @@ hooks** — the three thin wrappers around these scripts — stay in
 **one repo per action**). Those wrappers *reference* the scan logic kept here.
 
 > Sibling to `apps/diatreme`: diatreme ships your releases; chargate guards what
-> goes into them.
-
-## Layout
-
-```
-scripts/        the scanners (security-*.sh, lint-*.sh) + shared lib/
-versions.env    pinned scanner tool versions
-```
+> goes into them. Imported from `MagmaMoose/chargate@main` (scripts subtree only).

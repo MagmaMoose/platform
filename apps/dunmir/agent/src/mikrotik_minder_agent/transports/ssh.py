@@ -68,6 +68,17 @@ class SSHTransport:
         return self._device.username or self._defaults.ssh.username or "admin"
 
     @property
+    def _auth_material(self) -> str:
+        """What paramiko actually offers — a key, a password, or both. Used only
+        to make auth-failure messages accurate (key+password are both tried when
+        both are configured)."""
+        has_key = bool(self._device.ssh_key_path)
+        has_pw = bool(self._device.password)
+        if has_key and has_pw:
+            return "an SSH key and a password"
+        return "an SSH key" if has_key else "a password"
+
+    @property
     def known_hosts_path(self) -> str | None:
         """Persistent known_hosts file for router host-key pinning.
 
@@ -199,6 +210,34 @@ class SSHTransport:
             client.set_missing_host_key_policy(_WarnAcceptPolicy())  # type: ignore[arg-type]
         try:
             client.connect(**self._connect_kwargs)
+        except paramiko.BadAuthenticationType as exc:
+            # The router refused the auth METHOD we offered (not just the secret).
+            # Surfacing the methods it WILL accept turns an opaque "auth failed"
+            # into an actionable answer — if 'password' isn't in the list, RouterOS
+            # is refusing password login (/ip ssh always-allow-password-login).
+            allowed = ", ".join(getattr(exc, "allowed_types", []) or []) or "none"
+            raise TransportError(
+                f"SSH auth rejected for {self.username!r}: we sent {self._auth_material}, "
+                f"but this router only accepts [{allowed}] over SSH. If 'password' isn't "
+                f"in that list, RouterOS is refusing password login — check `/ip ssh print` "
+                f"(always-allow-password-login) and `/user ssh-keys print`."
+            ) from exc
+        except paramiko.AuthenticationException as exc:
+            # The method was accepted but the secret was rejected. When we're using a
+            # password, that's the SAME secret the API probe uses — so if API works
+            # this is router-side, not a wrong password. With a key (no password) the
+            # API comparison doesn't apply (the API probe uses a password).
+            if self._device.password:
+                hint = (
+                    " — the same password the API probe uses, so if API works this is "
+                    "router-side, not a bad password"
+                )
+            else:
+                hint = " (publickey only; the API probe uses a password, so this is independent)"
+            raise TransportError(
+                f"SSH authentication failed for {self.username!r} via "
+                f"{self._auth_material}{hint}: {exc}"
+            ) from exc
         except (TimeoutError, paramiko.SSHException, OSError) as exc:
             raise TransportError(f"SSH connect failed: {exc}") from exc
         if kh:

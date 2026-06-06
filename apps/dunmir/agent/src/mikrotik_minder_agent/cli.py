@@ -12,11 +12,11 @@ import click
 from .agentkeys import AgentKeyError, load_or_create_keypair, make_unsealer
 from .apply import ApplyAborted, ApplyError, ApplyResult, apply_summary, apply_update
 from .backup import BackupError, BackupRunner, backup_summary
-from .config import AgentConfig, ConfigError, load_config
+from .config import AgentConfig, ConfigError, load_config, with_managed_pipelines
 from .daemon import Daemon
 from .export import ExportError, ExportRunner
 from .minder import JobReport, MinderClient, MinderError
-from .remoteconfig import build_devices
+from .remoteconfig import build_devices, build_git_remote
 from .transports import TransportError, build_transports
 from .updates import UpdateCheckError, run_update_check, update_summary
 
@@ -113,7 +113,27 @@ def _apply_remote_config(
         ) from exc
     devices = build_devices(doc, unseal=unseal)
     log.info("loaded %d device(s) from the control plane", len(devices))
-    return replace(config, devices=devices)
+    config = replace(config, devices=devices)
+
+    # Attach the control-plane's offsite git remote (if any) to the export
+    # pipeline. Materialise the managed (PVC) pipelines first so config.git
+    # exists to hang the remote on; the daemon's own with_managed_pipelines
+    # call is then a no-op.
+    remote = build_git_remote(doc, unseal=unseal)
+    if remote is not None:
+        config = with_managed_pipelines(config)
+        if config.git is not None:
+            config = replace(config, git=replace(config.git, remote=remote))
+            log.info("export remote configured: %s", _safe_remote(remote.url))
+    return config
+
+
+def _safe_remote(url: str) -> str:
+    """Host + path only — never log a token that snuck into the URL."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.hostname or ''}{parts.path}" if parts.scheme else url
 
 
 @main.command()

@@ -16,11 +16,4 @@ share `packages/*` (e.g. `@platform/cf-auth`).
 > The private observability dashboard for this worker is `apps/diatreme-pro` in
 > the [platform-pro](https://github.com/MagmaMoose/platform-pro) repo.
 
-## Develop
-
-```bash
-pnpm install
-pnpm --filter ./ run typecheck   # tsc --noEmit
-pnpm --filter ./ test            # vitest
-npx wrangler deploy              # deploy the worker
-```
+> Imported from `MagmaMoose/diatreme@main` (worker subtree only).

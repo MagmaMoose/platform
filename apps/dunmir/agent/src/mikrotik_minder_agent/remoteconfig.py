@@ -16,7 +16,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from .agentkeys import AgentKeyError
-from .config import DeviceConfig, TransportPolicy
+from .config import DeviceConfig, GitRemoteConfig, TransportPolicy
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +55,58 @@ def devices_changed(
     the resolved credential — and ignores ordering.
     """
     return {d.name: d for d in current} != {d.name: d for d in fetched}
+
+
+def build_git_remote(
+    doc: dict[str, Any],
+    *,
+    unseal: Callable[[str], str] | None = None,
+) -> GitRemoteConfig | None:
+    """Map the config doc's ``git.remote`` into a GitRemoteConfig.
+
+    The control plane delivers the offsite export remote per-agent. The token is
+    delivered **sealed** (``token_sealed``) to the agent's vault key, exactly like
+    a device credential — the control plane only ever stores ciphertext. ``None``
+    when no remote is configured, or when a sealed token can't be opened (we'd
+    rather skip the push than configure a remote that can't authenticate).
+    """
+    git = doc.get("git")
+    if not isinstance(git, dict):
+        return None
+    remote = git.get("remote")
+    if not isinstance(remote, dict):
+        return None
+    url = remote.get("url")
+    if not isinstance(url, str) or not url.strip():
+        return None
+
+    token: str | None = None
+    sealed = remote.get("token_sealed")
+    if isinstance(sealed, str) and sealed:
+        if unseal is None:
+            log.warning("git remote has a sealed token but the agent has no vault key; skipping")
+            return None
+        try:
+            token = unseal(sealed)
+        except AgentKeyError as exc:
+            log.warning("git remote token decrypt failed (%s); skipping remote", exc)
+            return None
+
+    branch = remote.get("branch")
+    return GitRemoteConfig(
+        url=url.strip(),
+        branch=branch.strip() if isinstance(branch, str) and branch.strip() else "main",
+        token=token,
+        push=True,
+    )
+
+
+def git_remote_changed(
+    current: GitRemoteConfig | None,
+    fetched: GitRemoteConfig | None,
+) -> bool:
+    """True when the offsite git remote differs (frozen dataclass value compare)."""
+    return current != fetched
 
 
 def _build_one(

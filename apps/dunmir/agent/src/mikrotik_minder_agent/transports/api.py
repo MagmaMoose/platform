@@ -7,7 +7,7 @@ import time
 from typing import Any
 
 from ..config import Defaults, DeviceConfig
-from . import ProbeResult, TransportError
+from . import ProbeResult, RouterboardFacts, TransportError
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +58,9 @@ class APITransport:
             # One /system/resource row carries BOTH the RouterOS version and the
             # board-name, so the API probe can report hardware too — no SSH needed.
             resource = _first_row(api, "/system/resource/print")
+            # RouterBOARD model + firmware is a second cheap read; best-effort so a
+            # CHR or a quirk here never fails an otherwise-healthy probe.
+            routerboard = _routerboard_facts(api)
         except (LibRouterosError, OSError) as exc:
             raise TransportError(f"API probe command failed: {exc}") from exc
         finally:
@@ -71,8 +74,37 @@ class APITransport:
             identity=identity,
             version=_str(resource.get("version")),
             board=_str(resource.get("board-name")),
+            routerboard=routerboard,
             latency_ms=int((time.monotonic() - start) * 1000),
         )
+
+
+def _routerboard_facts(api: Any) -> RouterboardFacts | None:
+    """Read ``/system/routerboard`` over the API. ``None`` on CHR / no routerboard.
+
+    A failure here is swallowed (returns ``None``) — the routerboard read is a
+    nice-to-have on top of a probe that has already succeeded.
+    """
+    try:
+        row = _first_row(api, "/system/routerboard/print")
+    except Exception:
+        log.debug("api routerboard read failed, ignoring", exc_info=True)
+        return None
+    if not row or not _as_bool(row.get("routerboard")):
+        return None  # CHR or a device that doesn't report a routerboard
+    return RouterboardFacts(
+        model=_str(row.get("model")),
+        serial=_str(row.get("serial-number")),
+        current_firmware=_str(row.get("current-firmware")),
+        upgrade_firmware=_str(row.get("upgrade-firmware")),
+    )
+
+
+def _as_bool(value: Any) -> bool:
+    """librouteros may hand back a real bool or RouterOS's ``"true"``/``"false"``."""
+    if isinstance(value, bool):
+        return value
+    return isinstance(value, str) and value.strip().lower() == "true"
 
 
 def _first_value(api: Any, command: str, key: str) -> str | None:

@@ -25,12 +25,13 @@ from .config import (
     inventory_check_interval,
     ping_target,
     update_check_interval,
+    with_managed_pipelines,
 )
 from .export import ExportError, ExportResult, ExportRunner
 from .inventory import InventoryError, inventory_summary, run_inventory
 from .minder import CommandRef, JobReport, MinderClient, MinderError
 from .ping import PingError, run_ping
-from .remoteconfig import build_devices, devices_changed
+from .remoteconfig import build_devices, build_git_remote, devices_changed, git_remote_changed
 from .transports import ProbeResult, TransportError, build_transports
 from .updates import (
     UpdateCheckError,
@@ -74,6 +75,9 @@ class Daemon:
         dry_run: bool = False,
         unseal: Callable[[str], str] | None = None,
     ) -> None:
+        # Control-plane agents get PVC-backed export + backup pipelines so a
+        # freshly-added device is captured and backed up with no extra config.
+        config = with_managed_pipelines(config)
         self._config = config
         self._dry_run = dry_run
         self._unseal = unseal  # decrypts sealed (vault) credentials on config refresh
@@ -163,15 +167,25 @@ class Daemon:
             return
         while not self._stop.wait(timeout=interval):
             try:
-                fetched = build_devices(minder.fetch_config(), unseal=self._unseal)
+                doc = minder.fetch_config()
             except MinderError as exc:
-                log.warning("config refresh failed (%s); keeping current devices", exc)
+                log.warning("config refresh failed (%s); keeping current config", exc)
                 continue
-            if devices_changed(self._config.devices, fetched):
+            fetched = build_devices(doc, unseal=self._unseal)
+            devices_diff = devices_changed(self._config.devices, fetched)
+            # Only a git-remote change matters when this agent actually HAS an
+            # export pipeline to push from. If managed pipelines are disabled
+            # (config.git is None — e.g. an unwritable state dir), ignore remote
+            # diffs so we don't restart-loop trying to apply something we can't.
+            remote_diff = False
+            if self._config.git is not None:
+                fetched_remote = build_git_remote(doc, unseal=self._unseal)
+                remote_diff = git_remote_changed(self._config.git.remote, fetched_remote)
+            if devices_diff or remote_diff:
                 log.info(
-                    "control-plane config changed (%d -> %d device(s)) — restarting to apply",
-                    len(self._config.devices),
-                    len(fetched),
+                    "control-plane config changed (devices %s, git remote %s) — restarting",
+                    "changed" if devices_diff else "same",
+                    "changed" if remote_diff else "same",
                 )
                 self._stop.set()
                 return
@@ -311,6 +325,9 @@ class Daemon:
         result: ProbeResult | None = None
         error: str | None = None
         transport_kind = "none"
+        # Per-transport probe outcome (api/ssh) so the UI can show a status light
+        # for each, not just the winner. kind -> (ProbeResult | None, reason | None).
+        probes: dict[str, tuple[ProbeResult | None, str | None]] = {}
 
         if self._dry_run:
             transport_kind = "dry"
@@ -321,15 +338,27 @@ class Daemon:
             except TransportError as exc:
                 error = str(exc)
                 transports = []
+            # Probe every configured transport (not just until the first success) so
+            # both API and SSH report a reachable/failed status each tick. The first
+            # success — primary first — still wins for the device's identity/version.
             for t in transports:
-                transport_kind = t.kind  # remember the last one we tried
                 try:
-                    result = t.probe()
-                    error = None
-                    break
+                    probe = t.probe()
+                    probes[t.kind] = (probe, None)
+                    if result is None:
+                        result = probe
+                        transport_kind = t.kind
+                        error = None
                 except TransportError as exc:
-                    error = str(exc)
-                    log.warning("device %s %s probe failed: %s", device.name, t.kind, exc)
+                    probes[t.kind] = (None, str(exc))
+                    if result is None:
+                        transport_kind = t.kind  # last tried, until something succeeds
+                        error = str(exc)
+                    # Per-transport failures are expected steady state (e.g. SSH
+                    # intentionally blocked while API works) — debug, not warning,
+                    # so they don't flood the log every tick. A genuinely-down
+                    # device gets one WARNING below.
+                    log.debug("device %s %s probe failed: %s", device.name, t.kind, exc)
 
         finished = int(time.time())
         ok = result is not None
@@ -345,6 +374,10 @@ class Daemon:
                 f", identity {result.identity}" if result.identity else "",
                 result.latency_ms,
             )
+        elif not ok and not self._dry_run:
+            # One warning when the device is genuinely down (every transport failed),
+            # rather than one per failed transport above.
+            log.warning("device %s unreachable: %s", device.name, error or "all transports failed")
 
         # Optional packet-loss probe (router → ping_target), folded into the same
         # health_check report. Off unless a ping_target is configured, so we never
@@ -374,6 +407,7 @@ class Daemon:
             finished=finished,
             packet_loss_pct=packet_loss_pct,
             avg_rtt_ms=avg_rtt_ms,
+            probes=probes,
         )
 
         # Only attempt heavier jobs when the device responded — no point hammering a down router.
@@ -403,6 +437,7 @@ class Daemon:
         finished: int,
         packet_loss_pct: float | None = None,
         avg_rtt_ms: float | None = None,
+        probes: dict[str, tuple[ProbeResult | None, str | None]] | None = None,
     ) -> bool:
         state = self._state[device.name]
         with state.lock:
@@ -429,6 +464,25 @@ class Daemon:
             details["latency_ms"] = result.latency_ms
             if result.board:
                 details["board"] = result.board
+            if result.routerboard is not None:
+                rb = result.routerboard
+                details["routerboard"] = {
+                    "model": rb.model,
+                    "serial": rb.serial,
+                    "current_firmware": rb.current_firmware,
+                    "upgrade_firmware": rb.upgrade_firmware,
+                    "mismatch": rb.mismatch,
+                }
+        if probes:
+            # Per-transport reachability so the UI shows an API and an SSH light.
+            details["transports"] = {
+                kind: {
+                    "ok": probe is not None,
+                    "latency_ms": probe.latency_ms if probe is not None else None,
+                    "reason": reason,
+                }
+                for kind, (probe, reason) in probes.items()
+            }
         if packet_loss_pct is not None:
             details["packet_loss_pct"] = packet_loss_pct
         if avg_rtt_ms is not None:

@@ -18,12 +18,36 @@ class TransportError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class RouterboardFacts:
+    """RouterBOARD hardware + firmware facts (``/system routerboard``).
+
+    The API probe fills this so a hardware device shows its board model and
+    firmware state without an SSH session. ``None`` means CHR / no routerboard.
+    """
+
+    model: str | None = None
+    serial: str | None = None
+    current_firmware: str | None = None
+    upgrade_firmware: str | None = None
+
+    @property
+    def mismatch(self) -> bool:
+        return bool(
+            self.current_firmware
+            and self.upgrade_firmware
+            and self.current_firmware != self.upgrade_firmware
+        )
+
+
+@dataclass(frozen=True)
 class ProbeResult:
     kind: str            # 'api' | 'ssh'
     identity: str | None
     version: str | None
     latency_ms: int
     board: str | None = None   # RouterOS board-name; the API probe fills it, SSH leaves None
+    # RouterBOARD model + firmware, pulled over the API probe (None on CHR or SSH).
+    routerboard: RouterboardFacts | None = None
 
 
 class Transport(Protocol):
