@@ -1,0 +1,12 @@
+site_name: MagmaMoose Platform
+theme:
+  name: material
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - Setup: setup.md
+markdown_extensions:
+  - admonition
+  - pymdownx.superfences
+  - toc:
+      permalink: true

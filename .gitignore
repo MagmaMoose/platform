@@ -17,11 +17,13 @@ secrets.*
 node_modules/
 dist/
 build/
+target/
 .turbo/
 .svelte-kit/
 .wrangler/
 *.tsbuildinfo
 coverage/
+site/
 
 # ---- Python ----
 .venv/
@@ -39,5 +41,6 @@ __pycache__/
 *.log
 .idea/
 .vscode/
+.claude/last_output.txt
 .claude/worktrees/
 .stfolder/
