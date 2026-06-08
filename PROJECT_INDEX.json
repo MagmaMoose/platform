@@ -1,0 +1,139 @@
+{
+  "generated": "2026-06-08T10:54:15Z",
+  "summary": "Public MagmaMoose monorepo using pnpm workspaces, uv, Turborepo, and mise to consolidate open-source apps plus shared packages. The main runtime surfaces are Cloudflare Workers for Diatreme and Dunmir, a Python RouterOS agent for Dunmir, Chargate scan scripts, and shared contracts/config/auth packages.",
+  "entrypoints": [
+    "apps/diatreme/src/index.ts:default.fetch",
+    "apps/diatreme/src/index.ts:handleRequest",
+    "apps/diatreme/src/index.ts:handleScheduledRefresh",
+    "apps/dunmir/worker/src/index.ts:default.fetch",
+    "apps/dunmir/worker/src/index.ts:default.scheduled",
+    "apps/dunmir/agent/src/mikrotik_minder_agent/cli.py:main",
+    "apps/dunmir/agent/src/mikrotik_minder_agent/daemon.py:Daemon.run",
+    "apps/chargate/scripts/ci-report.sh:script"
+  ],
+  "modules": {
+    "root-tooling": {
+      "path": ".",
+      "purpose": "Workspace orchestration, pinned runtime versions, CI, and repo-wide package/workspace metadata.",
+      "exports": ["package.json scripts", "pnpm-workspace.yaml", "turbo.json", "pyproject.toml", "mise.toml", ".github/workflows/ci.yml"],
+      "depends_on": []
+    },
+    "diatreme-worker": {
+      "path": "apps/diatreme",
+      "purpose": "Cloudflare Worker for Diatreme token brokering, signed commits, Copilot quota, GitHub webhook triage, dispatch, and release aggregation.",
+      "exports": ["src/index.ts default handler", "handleRequest", "handleScheduledRefresh", "wrangler.jsonc"],
+      "depends_on": ["jose", "Cloudflare KV", "GitHub REST/GraphQL/OIDC/App APIs"]
+    },
+    "chargate-scripts": {
+      "path": "apps/chargate",
+      "purpose": "Security and lint scanner scripts referenced by the separate Chargate Marketplace action repo.",
+      "exports": ["scripts/ci-install-tools.sh", "scripts/ci-report.sh", "scripts/security-*.sh", "scripts/lint-*.sh", "versions.env"],
+      "depends_on": ["shellcheck", "trivy", "trufflehog", "semgrep", "checkov", "eslint", "hadolint", "actionlint"]
+    },
+    "dunmir-worker": {
+      "path": "apps/dunmir/worker",
+      "purpose": "Hono Cloudflare Worker control plane for agent ingest, admin APIs, tenant management, alerts, D1 state, and R2 backups.",
+      "exports": ["src/index.ts default handler", "src/routes/admin.ts", "src/routes/ingest.ts", "src/routes/tenants.ts", "src/scheduled.ts", "migrations/*.sql"],
+      "depends_on": ["hono", "Cloudflare D1", "Cloudflare R2", "Stytch JWKS", "Slack/Discord/webhook delivery"]
+    },
+    "dunmir-worker-auth": {
+      "path": "apps/dunmir/worker/src",
+      "purpose": "Auth, tenant resolution, environment typing, validation helpers, IDs, notification fanout, and scheduled dead-man checks.",
+      "exports": ["auth.ts requireAdmin/requireOperator/requireAgent", "stytch.ts requireCustomer/customerFromBearer", "schema.ts validators and enums", "notify.ts fireAlert", "scheduled.ts runScheduledSweep"],
+      "depends_on": ["dunmir-worker"]
+    },
+    "dunmir-agent-cli": {
+      "path": "apps/dunmir/agent/src/mikrotik_minder_agent",
+      "purpose": "Python Click CLI and daemon for probing RouterOS devices, reporting to the control plane, and running backup/export/update jobs.",
+      "exports": ["cli.py main", "daemon.py Daemon", "minder.py MinderClient", "config.py load_config/AgentConfig"],
+      "depends_on": ["httpx", "click", "PyYAML", "paramiko", "librouteros", "PyNaCl"]
+    },
+    "dunmir-agent-pipelines": {
+      "path": "apps/dunmir/agent/src/mikrotik_minder_agent",
+      "purpose": "RouterOS operational jobs: config export normalization/git commits, encrypted backups, inventory, ping, update checks, and update apply.",
+      "exports": ["export.py ExportRunner", "backup.py BackupRunner", "commands.py execute_command", "apply.py apply_update", "updates.py run_update_check", "inventory.py run_inventory", "normalise.py normalise_export"],
+      "depends_on": ["dunmir-agent-cli", "dunmir-agent-transports"]
+    },
+    "dunmir-agent-transports": {
+      "path": "apps/dunmir/agent/src/mikrotik_minder_agent/transports",
+      "purpose": "RouterOS API and SSH transport abstraction used by probes and maintenance jobs.",
+      "exports": ["build_transports", "APITransport", "SSHTransport", "ProbeResult", "RouterboardFacts"],
+      "depends_on": ["librouteros", "paramiko", "dunmir-agent-cli"]
+    },
+    "dunmir-chart-docs": {
+      "path": "apps/dunmir",
+      "purpose": "Helm chart and operator-facing protocol/design docs for deploying the Python agent and understanding worker-agent contracts.",
+      "exports": ["charts/mikrotik-minder-agent", "docs/agent-protocol.md", "docs/rfc-control-plane-managed-config.md"],
+      "depends_on": ["dunmir-agent-cli", "dunmir-worker"]
+    },
+    "platform-config": {
+      "path": "packages/config",
+      "purpose": "Shared tsconfig, vitest, prettier, and Ruff config files.",
+      "exports": ["tsconfig.base.json", "tsconfig.worker.json", "vitest.base.ts", "prettier.config.mjs", "ruff.toml"],
+      "depends_on": []
+    },
+    "platform-schemas": {
+      "path": "packages/schemas",
+      "purpose": "Shared contract package with matching TypeScript zod and Python Pydantic shapes.",
+      "exports": ["src/index.ts", "src/item.ts Item/ItemCreate", "python/platform_schemas/item.py Item/ItemCreate"],
+      "depends_on": ["zod", "pydantic"]
+    },
+    "platform-cf-auth": {
+      "path": "packages/cf-auth",
+      "purpose": "Shared Stytch B2B session claims and JWKS validators for Cloudflare Workers and Pages.",
+      "exports": ["claimsFromPayload", "validateStytchSession", "validateSession", "SessionClaims"],
+      "depends_on": ["jose", "Web Crypto"]
+    },
+    "platform-api-client": {
+      "path": "packages/api-client",
+      "purpose": "Placeholder typed API client and TanStack Query hooks package for future clients.",
+      "exports": ["src/index.ts"],
+      "depends_on": []
+    },
+    "platform-ui": {
+      "path": "packages/ui",
+      "purpose": "Placeholder shared shadcn web components package; DOM/web only.",
+      "exports": ["src/index.ts"],
+      "depends_on": []
+    }
+  },
+  "callgraph_highlights": [
+    {
+      "caller": "apps/diatreme/src/index.ts:handleRequest",
+      "calls": ["handleTokenRequest", "handleCopilotQuotaRequest", "handleWebhookRequest", "handleProcessRequest", "handleDispatchRequest", "handleSignRequest", "handleReleasesRequest", "OAuth handlers"],
+      "note": "Single Worker dispatches by URL path; most Diatreme behavior lives in this large file."
+    },
+    {
+      "caller": "apps/dunmir/worker/src/index.ts",
+      "calls": ["routes/ingest", "routes/admin", "routes/tenants", "runScheduledSweep"],
+      "note": "Hono app wires public health, agent ingest, admin/customer APIs, superadmin tenants, and cron dead-man alerting."
+    },
+    {
+      "caller": "apps/dunmir/worker/src/routes/ingest.ts",
+      "calls": ["requireAgent", "fireAlert", "D1 statements", "R2 backup writes"],
+      "note": "Agent-facing protocol for heartbeats, job results, commands, backups, config, and public key registration."
+    },
+    {
+      "caller": "apps/dunmir/agent/src/mikrotik_minder_agent/cli.py:run",
+      "calls": ["load_config", "load_or_create_keypair", "MinderClient.fetch_config", "Daemon.run"],
+      "note": "Startup path loads local/remote config, registers vault public key when present, then starts the daemon."
+    },
+    {
+      "caller": "apps/dunmir/agent/src/mikrotik_minder_agent/daemon.py:Daemon",
+      "calls": ["build_transports", "MinderClient", "ExportRunner", "BackupRunner", "run_update_check", "execute_command"],
+      "note": "One thread per device plus command/config refresh loops; scheduled jobs are interval-driven."
+    }
+  ],
+  "hotspots": [
+    "apps/diatreme/src/index.ts",
+    "apps/dunmir/worker/src/routes/admin.ts",
+    "apps/dunmir/worker/src/routes/ingest.ts",
+    "apps/dunmir/worker/src/auth.ts",
+    "apps/dunmir/worker/src/schema.ts",
+    "apps/dunmir/worker/migrations",
+    "apps/dunmir/agent/src/mikrotik_minder_agent/cli.py",
+    "apps/dunmir/agent/src/mikrotik_minder_agent/daemon.py",
+    "apps/dunmir/agent/src/mikrotik_minder_agent/config.py",
+    "apps/dunmir/agent/src/mikrotik_minder_agent/minder.py"
+  ]
+}
