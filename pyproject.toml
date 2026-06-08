@@ -6,6 +6,47 @@ version = "0.0.0"
 description = "Golden-stack public monorepo — Python workspace root"
 requires-python = ">=3.12"
 
+[tool.semantic_release]
+version_variables = [
+  "pyproject.toml:project.version",
+  "pyproject.toml:tool.semantic_release.version",
+]
+build_command = ""
+major_on_zero = false
+tag_format = "v{version}"
+commit_message = "chore(release): v{version}"
+
+# Current version, maintained by python-semantic-release.
+version = "0.0.0"
+
+[tool.semantic_release.branches.main]
+match = "(main|master)"
+prerelease = false
+
+[tool.semantic_release.changelog]
+changelog_file = "CHANGELOG.md"
+exclude_commit_patterns = []
+
+[tool.semantic_release.commit_parser_options]
+allowed_tags = [
+  "feat",
+  "fix",
+  "docs",
+  "style",
+  "refactor",
+  "perf",
+  "test",
+  "build",
+  "ci",
+  "chore",
+  "revert",
+]
+minor_tags = ["feat"]
+patch_tags = ["fix", "perf"]
+
+[tool.semantic_release.remote]
+type = "github"
+
 [tool.uv.workspace]
 members = ["apps/dunmir/agent"]
 
