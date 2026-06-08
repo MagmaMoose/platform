@@ -10,6 +10,32 @@ on:
 # This root pipeline drives the whole workspace via Turborepo + uv.
 
 jobs:
+  branch-name:
+    name: Branch name
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Enforce TBD branch naming
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${HEAD_REF}" =~ ^(dependabot|renovate)/ ]]; then
+            echo "Skipping bot branch '${HEAD_REF}'."
+            exit 0
+          fi
+
+          if [[ "${HEAD_REF}" =~ ^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)/[^/]+(/[^/]+)?$ ]]; then
+            echo "Branch '${HEAD_REF}' follows TBD naming convention."
+            exit 0
+          fi
+
+          echo "::error::Branch '${HEAD_REF}' does not follow TBD naming convention."
+          echo "::error::Expected: <type>/<description> or <type>/<scope>/<description>."
+          echo "::error::Allowed types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert."
+          exit 1
+
   js:
     name: JS / TS (turbo)
     runs-on: ubuntu-latest
@@ -35,3 +61,22 @@ jobs:
           python-version: "3.12"
       - run: uv sync --all-packages
       - run: uvx ruff check .
+
+  image:
+    name: PR image
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: read
+    steps:
+      - uses: magmamoose/diatreme@v1
+        with:
+          mode: ci
+          image_name: dunmir-agent
+          bake_file: docker-bake.hcl
+          bake_target: default
+          platforms: linux/amd64,linux/arm64
+          enforce_branch_naming: 'false'
+          github-token: ${{ secrets.GITHUB_TOKEN }}

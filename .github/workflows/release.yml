@@ -1,0 +1,28 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# Monorepo uses a single trunk branch for TBD releases. Diatreme handles
+# version calculation, tag creation, GitHub Releases, changelog commits, and
+# promotion of the PR-built Dunmir agent image.
+
+jobs:
+  release:
+    uses: magmamoose/diatreme/.github/workflows/diatreme.yaml@v1
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    with:
+      mode: release
+      deployment-model: tbd
+      environment: prod
+      environments: '["prod"]'
+      prerelease-identifiers: '{}'
+      versioning-tool: semantic-release-python
+      image_name: dunmir-agent
+      bake_file: docker-bake.hcl
+      bake_target: default
+      platforms: linux/amd64,linux/arm64

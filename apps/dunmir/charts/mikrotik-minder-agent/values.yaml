@@ -6,7 +6,7 @@
 # a Recreate strategy so the PVC isn't held during rollout.
 
 image:
-  repository: ghcr.io/magmamoose/mikrotik-minder-agent
+  repository: ghcr.io/magmamoose/dunmir-agent
   tag: ""                # defaults to .Chart.appVersion when empty
   pullPolicy: IfNotPresent
   pullSecrets: []

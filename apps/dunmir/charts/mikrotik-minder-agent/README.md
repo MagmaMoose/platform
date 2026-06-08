@@ -106,7 +106,7 @@ kubectl -n minder exec deploy/minder-mikrotik-minder-agent -- \
 
 | Key                                  | Default                                                    | Notes |
 | ------------------------------------ | ---------------------------------------------------------- | ----- |
-| `image.repository`                   | `ghcr.io/magmamoose/mikrotik-minder-agent`                 | |
+| `image.repository`                   | `ghcr.io/magmamoose/dunmir-agent`                          | |
 | `image.tag`                          | `""` (uses `.Chart.appVersion`)                            | |
 | `config`                             | minimal placeholder                                        | Whatever you put here becomes `/etc/mikrotik-minder/config.yaml` verbatim. |
 | `secrets.create`                     | `true`                                                     | Toggle off when bringing your own Secret. |
