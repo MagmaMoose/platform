@@ -9,6 +9,13 @@ on:
 # are INERT in a monorepo (GitHub only runs workflows from the repo-root .github).
 # This root pipeline drives the whole workspace via Turborepo + uv.
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   branch-name:
     name: Branch name
@@ -50,6 +57,10 @@ jobs:
           cache: pnpm
       - run: pnpm install
       - run: pnpm turbo run lint typecheck test build
+      - name: Dun Mir worker dry deploy
+        env:
+          CLOUDFLARE_API_TOKEN: dummy
+        run: pnpm --dir apps/dunmir/worker exec wrangler deploy --dry-run --outdir dist
 
   python:
     name: Python (uv + ruff)
