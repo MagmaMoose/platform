@@ -1,0 +1,114 @@
+name: Code Coverage
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/code-coverage.yml"
+      - "apps/diatreme/**"
+      - "apps/dunmir/agent/**"
+      - "apps/dunmir/worker/**"
+      - "packages/**"
+      - "mise.toml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "pyproject.toml"
+      - "uv.lock"
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - ".github/workflows/code-coverage.yml"
+      - "apps/diatreme/**"
+      - "apps/dunmir/agent/**"
+      - "apps/dunmir/worker/**"
+      - "packages/**"
+      - "mise.toml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "pyproject.toml"
+      - "uv.lock"
+
+permissions:
+  contents: read
+  code-quality: write
+
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: uv sync --all-packages --all-extras
+
+      - name: Run Dun Mir agent coverage
+        run: >
+          uv run --package mikrotik-minder-agent pytest apps/dunmir/agent
+          --cov=mikrotik_minder_agent
+          --cov-report=term-missing
+          --cov-report=xml:apps/dunmir/agent/coverage.xml
+
+      - name: Upload Dun Mir agent coverage
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-code-coverage@v1
+        with:
+          report: apps/dunmir/agent/coverage.xml
+          language: Python
+          label: dunmir-agent/pytest
+
+  javascript:
+    name: JS / TS coverage (${{ matrix.label }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: mikrotik-minder-worker
+            language: JavaScript
+            label: dunmir-worker/vitest
+            report: apps/dunmir/worker/coverage/cobertura-coverage.xml
+          - package: "@calebsargeant/diatreme"
+            language: JavaScript
+            label: diatreme/vitest
+            report: apps/diatreme/coverage/cobertura-coverage.xml
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install JS dependencies
+        run: pnpm install
+
+      - name: Run Vitest coverage
+        run: pnpm turbo run coverage --filter=${{ matrix.package }}
+
+      - name: Upload ${{ matrix.label }} coverage
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-code-coverage@v1
+        with:
+          report: ${{ matrix.report }}
+          language: ${{ matrix.language }}
+          label: ${{ matrix.label }}
