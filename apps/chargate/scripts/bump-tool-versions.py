@@ -33,7 +33,7 @@ def gh_tag(repo):
 
 def pypi(pkg):
     url = f"https://pypi.org/pypi/{pkg}/json"  # pkg is a constant tool name, not user input
-    with urllib.request.urlopen(url, timeout=30) as f:  # nosemgrep
+    with urllib.request.urlopen(url, timeout=30) as f:  # nosemgrep  # noqa: S310
         return json.load(f)["info"]["version"]
 
 
