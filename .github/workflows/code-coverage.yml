@@ -15,6 +15,7 @@ on:
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
       - "pyproject.toml"
+      - "turbo.json"
       - "uv.lock"
   pull_request:
     branches: [main]
@@ -30,6 +31,7 @@ on:
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
       - "pyproject.toml"
+      - "turbo.json"
       - "uv.lock"
 
 permissions:
@@ -49,7 +51,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.12"
 
@@ -67,7 +69,7 @@ jobs:
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/upload-code-coverage@v1
         with:
-          report: apps/dunmir/agent/coverage.xml
+          file: apps/dunmir/agent/coverage.xml
           language: Python
           label: dunmir-agent/pytest
 
@@ -91,11 +93,12 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: pnpm
 
       - name: Install JS dependencies
         run: pnpm install
@@ -107,6 +110,6 @@ jobs:
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/upload-code-coverage@v1
         with:
-          report: ${{ matrix.report }}
+          file: ${{ matrix.report }}
           language: ${{ matrix.language }}
           label: ${{ matrix.label }}
