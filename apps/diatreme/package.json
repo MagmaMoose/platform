@@ -10,13 +10,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "jose": "^6.2.3"
+    "jose": "6.2.3"
   },
   "devDependencies": {
-    "@types/node": "^25.9.2",
+    "@types/node": "25.9.2",
     "@vitest/coverage-v8": "4.1.8",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.8",
-    "wrangler": "^4.98.0"
+    "typescript": "6.0.3",
+    "vitest": "4.1.8",
+    "wrangler": "4.98.0"
   }
 }

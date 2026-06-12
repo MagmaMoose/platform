@@ -1,4 +1,9 @@
 // Lightweight runtime validation. Kept dependency-free to stay small on Workers.
+//
+// Canonical contract: the enums and request/response shapes below mirror
+// @platform/schemas (packages/schemas/src/dunmir.ts + the Pydantic side in
+// packages/schemas/python/platform_schemas/dunmir.py). Change the contract
+// THERE first, then keep this file in lockstep.
 
 export type ValidationResult<T> =
   | { ok: true; value: T }
