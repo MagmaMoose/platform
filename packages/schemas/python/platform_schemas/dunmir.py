@@ -11,18 +11,18 @@ intentionally avoids Pydantic) — both are documented mirrors of THIS contract.
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
 
-class Transport(str, Enum):
+class Transport(StrEnum):
     api = "api"
     ssh = "ssh"
 
 
-class JobKind(str, Enum):
+class JobKind(StrEnum):
     backup = "backup"
     export = "export"
     drift = "drift"
@@ -34,33 +34,33 @@ class JobKind(str, Enum):
     inventory_sync = "inventory_sync"
 
 
-class JobStatus(str, Enum):
+class JobStatus(StrEnum):
     success = "success"
     warning = "warning"
     failed = "failed"
     skipped = "skipped"
 
 
-class DeviceStatus(str, Enum):
+class DeviceStatus(StrEnum):
     unknown = "unknown"
     ok = "ok"
     degraded = "degraded"
     down = "down"
 
 
-class RouteKind(str, Enum):
+class RouteKind(StrEnum):
     webhook = "webhook"
     slack = "slack"
     discord = "discord"
 
 
-class Severity(str, Enum):
+class Severity(StrEnum):
     info = "info"
     warning = "warning"
     critical = "critical"
 
 
-class AlertKind(str, Enum):
+class AlertKind(StrEnum):
     heartbeat_missed = "heartbeat_missed"
     heartbeat_recovered = "heartbeat_recovered"
     job_failed = "job_failed"
@@ -73,7 +73,7 @@ class AlertKind(str, Enum):
     manual = "manual"
 
 
-class CommandKind(str, Enum):
+class CommandKind(StrEnum):
     """`sensitive_export` is an /export WITHOUT hide-sensitive (passwords/keys)."""
 
     backup = "backup"
@@ -82,7 +82,7 @@ class CommandKind(str, Enum):
     sensitive_export = "sensitive_export"
 
 
-class CommandStatus(str, Enum):
+class CommandStatus(StrEnum):
     pending = "pending"
     claimed = "claimed"
     succeeded = "succeeded"
@@ -117,7 +117,7 @@ class JobReport(BaseModel):
     details: dict[str, Any] | None = None
 
     @model_validator(mode="after")
-    def _finished_not_before_started(self) -> "JobReport":
+    def _finished_not_before_started(self) -> JobReport:
         if self.finished_at < self.started_at:
             raise ValueError("finished_at must be >= started_at")
         return self
