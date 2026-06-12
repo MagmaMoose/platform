@@ -17,31 +17,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  branch-name:
-    name: Branch name
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - name: Enforce TBD branch naming
-        env:
-          HEAD_REF: ${{ github.head_ref }}
-        run: |
-          set -euo pipefail
-
-          if [[ "${HEAD_REF}" =~ ^(dependabot|renovate)/ ]]; then
-            echo "Skipping bot branch '${HEAD_REF}'."
-            exit 0
-          fi
-
-          if [[ "${HEAD_REF}" =~ ^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)/[^/]+(/[^/]+)?$ ]]; then
-            echo "Branch '${HEAD_REF}' follows TBD naming convention."
-            exit 0
-          fi
-
-          echo "::error::Branch '${HEAD_REF}' does not follow TBD naming convention."
-          echo "::error::Expected: <type>/<description> or <type>/<scope>/<description>."
-          echo "::error::Allowed types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert."
-          exit 1
+# Magma Moose Diatreme will automatically enforce branch naming conventions on PRs if the `enforce_branch_naming` input is set to 'true'. To enable this, uncomment the following job and adjust the regex as needed for your branch naming rules. The example regex allows for conventional commit types (feat, fix, docs, etc.) followed by a description, with optional scope.
+# The below is pretty cool code though
+#  branch-name:
+#    name: Branch name
+#    runs-on: ubuntu-latest
+#    if: github.event_name == 'pull_request'
+#    steps:
+#      - name: Enforce TBD branch naming
+#        env:
+#          HEAD_REF: ${{ github.head_ref }}
+#        run: |
+#          set -euo pipefail
+#
+#          if [[ "${HEAD_REF}" =~ ^(dependabot|renovate)/ ]]; then
+#            echo "Skipping bot branch '${HEAD_REF}'."
+#            exit 0
+#          fi
+#
+#          if [[ "${HEAD_REF}" =~ ^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)/[^/]+(/[^/]+)?$ ]]; then
+#            echo "Branch '${HEAD_REF}' follows TBD naming convention."
+#            exit 0
+#          fi
+#
+#          echo "::error::Branch '${HEAD_REF}' does not follow TBD naming convention."
+#          echo "::error::Expected: <type>/<description> or <type>/<scope>/<description>."
+#          echo "::error::Allowed types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert."
+#          exit 1
 
   js:
     name: JS / TS (turbo)
