@@ -134,7 +134,9 @@ class CommandRef(BaseModel):
 
 
 class ClaimCommandsResponse(BaseModel):
-    commands: list[CommandRef] = Field(default_factory=list)
+    # Required, mirroring the zod side (`z.array(CommandRef)`); the worker always
+    # emits this key (empty list when nothing is claimable).
+    commands: list[CommandRef]
 
 
 # --- POST /v1/ingest/commands/:id/result --------------------------------------
@@ -142,6 +144,11 @@ class ClaimCommandsResponse(BaseModel):
 
 class CommandResult(BaseModel):
     status: Literal["succeeded", "failed"]
-    result: dict[str, Any] | None = None
+    # Optional like the zod `.optional()` mirror (and the worker): absent is fine,
+    # but an explicit null is rejected — the worker returns "result must be an
+    # object". `Field(default=None)` keeps the field optional while excluding None
+    # from the accepted type, so passing `result=null` raises instead of slipping
+    # through as it did with `dict | None`.
+    result: dict[str, Any] = Field(default=None)
     # One-shot sensitive-export body; only allowed for kind=sensitive_export.
     artifact: str | None = None
