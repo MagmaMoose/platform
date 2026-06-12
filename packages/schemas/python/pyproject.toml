@@ -7,7 +7,7 @@ version = "0.0.0"
 description = "Shared contracts (Pydantic v2) — mirror of the zod shapes in ../src."
 requires-python = ">=3.12"
 dependencies = [
-    "pydantic>=2.0.0",
+    "pydantic>=2.0.0,<3",
 ]
 
 [build-system]
