@@ -1,0 +1,18 @@
+# Python (Pydantic v2) side of @platform/schemas — now a real installable uv
+# package (workspace member) so backends can `uv add platform-schemas` instead
+# of copy-pasting shapes. The zod side lives in ../src; keep both in lockstep.
+[project]
+name = "platform-schemas"
+version = "0.0.0"
+description = "Shared contracts (Pydantic v2) — mirror of the zod shapes in ../src."
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.0.0,<3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["platform_schemas"]

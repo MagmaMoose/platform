@@ -47,9 +47,9 @@ jobs:
     name: JS / TS (turbo)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -64,7 +64,7 @@ jobs:
     name: Python (uv + ruff)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.12"
@@ -80,7 +80,7 @@ jobs:
       packages: write
       pull-requests: read
     steps:
-      - uses: magmamoose/diatreme@v1
+      - uses: magmamoose/diatreme@d0706e1f21c7dd5fe8e1067ca7b1a5c042d56c1d # v1.30.0
         with:
           mode: ci
           image_name: dunmir-agent

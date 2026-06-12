@@ -10,7 +10,7 @@ on:
 
 jobs:
   release:
-    uses: magmamoose/diatreme/.github/workflows/diatreme.yaml@v1
+    uses: magmamoose/diatreme/.github/workflows/diatreme.yaml@d0706e1f21c7dd5fe8e1067ca7b1a5c042d56c1d # v1.30.0
     permissions:
       contents: read
       packages: write

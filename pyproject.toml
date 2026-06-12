@@ -48,7 +48,9 @@ patch_tags = ["fix", "perf"]
 type = "github"
 
 [tool.uv.workspace]
-members = ["apps/dunmir/agent"]
+# packages/schemas/python = the installable Pydantic side of @platform/schemas
+# (mirrors the zod shapes in packages/schemas/src).
+members = ["packages/schemas/python", "apps/dunmir/agent"]
 
 # Shared Python lint/format config — Ruff only (no Black/Flake8/isort).
 [tool.ruff]

@@ -1,4 +1,13 @@
-"""HTTP client for the Mikrotik Minder control plane."""
+"""HTTP client for the Mikrotik Minder control plane.
+
+Canonical contract: the JobReport / CommandRef shapes (and the /v1/ingest
+protocol they ride) mirror ``@platform/schemas`` —
+``packages/schemas/python/platform_schemas/dunmir.py`` (Pydantic) and
+``packages/schemas/src/dunmir.ts`` (zod). They stay stdlib dataclasses HERE
+because this agent is a published standalone CLI that deliberately avoids a
+Pydantic dependency — change the contract in the package first, then keep
+these in lockstep.
+"""
 
 from __future__ import annotations
 
